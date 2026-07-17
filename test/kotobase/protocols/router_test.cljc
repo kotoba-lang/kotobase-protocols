@@ -3,6 +3,7 @@
             [clojure.test :refer [deftest is testing]]
             [kotobase.local :as local]
             [kotobase.protocols.blocks :as blocks]
+            [kotobase.protocols.json :as json]
             [kotobase.protocols.router :as router]))
 
 (defn- ctx [] {:store (local/local-store) :now "2026-07-17T00:00:00Z"})
@@ -31,7 +32,13 @@
                                             :path "/xrpc/does.not.exist"})))))
     (testing "git subdomain"
       (is (= 404 (:status (router/handle c {:method :get :host "git.kotobase.net"
-                                            :path "/nope/info/refs"})))))))
+                                            :path "/nope/info/refs"})))))
+    (testing "pinning subdomain (write surface, distinct from read-only ipfs)"
+      (blocks/put-block! (:store c) "bafypinme" {:bytes "x" :content-type "text/plain"})
+      (let [res (router/handle c {:method :post :host "pinning.kotobase.net"
+                                  :path "/pins" :body (json/encode {"cid" "bafypinme"})})]
+        (is (= 202 (:status res)))
+        (is (= "pinned" (get (json/parse (:body res)) "status")))))))
 
 (deftest single-origin-fallback
   (let [c (ctx)]
@@ -42,6 +49,12 @@
                                         :path "/s3/bkt/k"}))))
     (is (= 501 (:status (router/handle c {:method :get :host "peer.local"
                                           :path "/xrpc/does.not.exist"}))))
+    (testing "/pins is the spec-native path, mounted unstripped"
+      (blocks/put-block! (:store c) "bafypeerpin" {:bytes "x" :content-type "text/plain"})
+      (let [res (router/handle c {:method :post :host "peer.local" :path "/pins"
+                                  :body (json/encode {"cid" "bafypeerpin"})})]
+        (is (= 202 (:status res)))
+        (is (= "pinned" (get (json/parse (:body res)) "status")))))
     (let [res (router/handle c {:method :get :host "peer.local" :path "/other"})]
       (is (= 404 (:status res)))
       (is (str/includes? (:body res) "no protocol surface")))))

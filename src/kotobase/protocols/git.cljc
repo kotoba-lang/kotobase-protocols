@@ -73,31 +73,97 @@
     (http/not-found (str "repository not found: " repo))))
 
 (defn- loose-object [store repo d2 d38]
-  (let [sha (str d2 d38)]
-    (if-let [bytes (st/-get store (objects-coll repo) sha)]
-      (http/response 200 {"content-type" "application/x-git-loose-object"} bytes)
-      (http/not-found (str "object not found: " sha)))))
+  (let [sha (str d2 d38)
+        stored (st/-get store (objects-coll repo) sha)]
+    (cond
+      (nil? stored) (http/not-found (str "object not found: " sha))
+      ;; base64-marked objects (real zlib loose objects seeded over HTTP)
+      ;; carry :body-encoding so the deploy shell decodes them back to
+      ;; raw bytes for git clients.
+      (map? stored) (assoc (http/response 200
+                                          {"content-type" "application/x-git-loose-object"}
+                                          (:b64 stored))
+                           :body-encoding :base64)
+      :else (http/response 200 {"content-type" "application/x-git-loose-object"} stored))))
+
+(defn- base64-body? [req] (= "base64" (http/header req "x-kotobase-body")))
+
+(defn- object-path?
+  "[… \"objects\" \"aa\" \"38hex\"] tail?"
+  [segs n]
+  (and (>= n 4) (= "objects" (segs (- n 3)))
+       (re-matches #"[0-9a-f]{2}" (segs (- n 2)))
+       (re-matches #"[0-9a-f]{38}" (segs (- n 1)))))
+
+(defn- handle-get [store segs n]
+  (cond
+    (and (>= n 3) (= ["info" "refs"] (subvec segs (- n 2))))
+    (info-refs store (str/join "/" (subvec segs 0 (- n 2))))
+
+    (and (>= n 2) (= "HEAD" (peek segs)))
+    (head-line store (str/join "/" (subvec segs 0 (dec n))))
+
+    ;; dumb-transport clients probe these; empty 200 keeps them on the
+    ;; loose-object path (this surface serves no packs).
+    (and (>= n 4) (= ["objects" "info" "packs"] (subvec segs (- n 3))))
+    (http/text 200 "")
+    (and (>= n 4) (= ["objects" "info" "alternates"] (subvec segs (- n 3))))
+    (http/text 200 "")
+
+    (object-path? segs n)
+    (loose-object store
+                  (str/join "/" (subvec segs 0 (- n 3)))
+                  (segs (- n 2)) (segs (- n 1)))
+
+    :else (http/not-found)))
+
+(defn- handle-put
+  "HTTP write surface (the deploy shell's write auth gates every PUT).
+  Bodies with header `x-kotobase-body: base64` are stored as
+  {:b64 …} and served back with :body-encoding :base64."
+  [store req segs n]
+  (let [body (:body req)]
+    (cond
+      (and (>= n 2) (= "HEAD" (peek segs)))
+      (let [repo (str/join "/" (subvec segs 0 (dec n)))]
+        (if (and body (str/starts-with? body "ref: refs/"))
+          (do (st/-put store (refs-coll repo) "HEAD" (str/trim body))
+              (http/text 200 "ok"))
+          (http/text 400 "HEAD body must be a 'ref: refs/…' symref line")))
+
+      (object-path? segs n)
+      (let [repo (str/join "/" (subvec segs 0 (- n 3)))
+            sha (str (segs (- n 2)) (segs (- n 1)))]
+        (if (seq body)
+          (do (st/-put store (objects-coll repo) sha
+                       (if (base64-body? req) {:b64 body} body))
+              (st/-append store :kotobase.protocols/audit
+                          {:surface :git :op :put-object :repo repo :sha sha})
+              (http/text 200 sha))
+          (http/text 400 "empty object body")))
+
+      ;; PUT /{repo}/refs/… — refname = the path tail from its "refs"
+      ;; segment on, body = 40-hex sha it should point at.
+      :else
+      (if-let [i (first (keep-indexed
+                         (fn [i s] (when (and (pos? i) (= "refs" s)) i)) segs))]
+        (let [repo (str/join "/" (subvec segs 0 i))
+              refname (str/join "/" (subvec segs i))
+              sha (some-> body str/trim)]
+          (if (and sha (re-matches #"[0-9a-f]{40}" sha))
+            (do (set-ref! store repo refname sha)
+                (http/text 200 sha))
+            (http/text 400 "ref body must be a 40-hex sha")))
+        (http/not-found)))))
 
 (defn handle
-  "git dumb-HTTP handler (GET only). Repo path = every segment before
-  the protocol suffix, joined with '/', so org/repo nesting works."
+  "git dumb-HTTP handler: GET serves clone/fetch, PUT seeds
+  refs/objects/HEAD. Repo path = every segment before the protocol
+  suffix, joined with '/', so org/repo nesting works."
   [{:keys [store]} req]
   (let [segs (http/segments (:path req))
         n (count segs)]
-    (if-not (= :get (:method req))
-      (http/method-not-allowed)
-      (cond
-        (and (>= n 3) (= ["info" "refs"] (subvec segs (- n 2))))
-        (info-refs store (str/join "/" (subvec segs 0 (- n 2))))
-
-        (and (>= n 2) (= "HEAD" (peek segs)))
-        (head-line store (str/join "/" (subvec segs 0 (dec n))))
-
-        (and (>= n 4) (= "objects" (segs (- n 3)))
-             (re-matches #"[0-9a-f]{2}" (segs (- n 2)))
-             (re-matches #"[0-9a-f]{38}" (segs (- n 1))))
-        (loose-object store
-                      (str/join "/" (subvec segs 0 (- n 3)))
-                      (segs (- n 2)) (segs (- n 1)))
-
-        :else (http/not-found)))))
+    (case (:method req)
+      :get (handle-get store segs n)
+      :put (handle-put store req segs n)
+      (http/method-not-allowed))))

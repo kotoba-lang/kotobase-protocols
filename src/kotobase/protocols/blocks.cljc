@@ -17,12 +17,16 @@
 
 (defn put-block!
   "Store `bytes` under caller-computed `cid`. Idempotent (content-addressed:
-  same cid ⇒ same bytes). Returns the block map."
-  [store cid {:keys [bytes content-type] :as block}]
+  same cid ⇒ same bytes). `:encoding \"base64\"` marks bytes that are a
+  base64 transport encoding of binary content — surfaces serve those
+  with :body-encoding :base64 so the deploy shell decodes them back to
+  raw bytes. Returns the block map."
+  [store cid {:keys [bytes content-type encoding] :as block}]
   {:pre [(string? cid) (string? bytes)]}
   (st/-put store coll cid
-           {:bytes bytes
-            :content-type (or content-type "application/octet-stream")})
+           (cond-> {:bytes bytes
+                    :content-type (or content-type "application/octet-stream")}
+             encoding (assoc :encoding encoding)))
   (st/-append store :kotobase.protocols/audit
               {:surface :blocks :op :put :cid cid :size (count bytes)})
   block)

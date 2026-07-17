@@ -45,12 +45,13 @@
       (and (= "ipfs" (first segs)) (= 2 (count segs)))
       (let [cid (second segs)]
         (if-let [b (blocks/get-block store cid)]
-          (http/response 200
-                         {"content-type" (sanitize-content-type (:content-type b))
-                          "etag" (str "\"" cid "\"")
-                          "x-ipfs-path" (str "/ipfs/" cid)
-                          "cache-control" "public, max-age=29030400, immutable"}
-                         (when (= :get (:method req)) (:bytes b)))
+          (cond-> (http/response 200
+                                 {"content-type" (sanitize-content-type (:content-type b))
+                                  "etag" (str "\"" cid "\"")
+                                  "x-ipfs-path" (str "/ipfs/" cid)
+                                  "cache-control" "public, max-age=29030400, immutable"}
+                                 (when (= :get (:method req)) (:bytes b)))
+            (= "base64" (:encoding b)) (assoc :body-encoding :base64))
           (http/not-found (str "block not found: " cid))))
 
       (= "ipns" (first segs))

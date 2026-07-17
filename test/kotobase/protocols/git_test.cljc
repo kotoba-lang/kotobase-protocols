@@ -53,3 +53,35 @@
   (let [{:keys [store]} (seeded)]
     (is (thrown? #?(:clj AssertionError :cljs js/Error)
                  (git/put-object! store "r" "not-a-sha" "bytes")))))
+
+(deftest http-write-surface
+  (let [c {:store (local/local-store)}]
+    (testing "PUT ref + HEAD + object, then dumb clone reads see them"
+      (is (= 200 (:status (git/handle c {:method :put
+                                         :path "/o/r/refs/heads/main"
+                                         :body sha1}))))
+      (is (= 200 (:status (git/handle c {:method :put :path "/o/r/HEAD"
+                                         :body "ref: refs/heads/main\n"}))))
+      (is (= 200 (:status (git/handle c {:method :put
+                                         :path (str "/o/r/objects/" (subs sha1 0 2)
+                                                    "/" (subs sha1 2))
+                                         :headers {"x-kotobase-body" "base64"}
+                                         :body "emxpYg=="}))))
+      (is (= (str sha1 "\trefs/heads/main\n")
+             (:body (git/handle c {:method :get :path "/o/r/info/refs"}))))
+      (let [obj (git/handle c {:method :get
+                               :path (str "/o/r/objects/" (subs sha1 0 2)
+                                          "/" (subs sha1 2))})]
+        (is (= "emxpYg==" (:body obj)))
+        (is (= :base64 (:body-encoding obj))
+            "b64-seeded objects are flagged for shell-side decode")))
+    (testing "validation"
+      (is (= 400 (:status (git/handle c {:method :put :path "/o/r/refs/heads/x"
+                                         :body "not-a-sha"}))))
+      (is (= 400 (:status (git/handle c {:method :put :path "/o/r/HEAD"
+                                         :body "gibberish"})))))
+    (testing "dumb-transport probes return empty 200"
+      (is (= 200 (:status (git/handle c {:method :get
+                                         :path "/o/r/objects/info/packs"}))))
+      (is (= "" (:body (git/handle c {:method :get
+                                      :path "/o/r/objects/info/alternates"})))))))

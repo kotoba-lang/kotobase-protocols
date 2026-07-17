@@ -1,15 +1,34 @@
 (ns kotobase.protocols.router
   "Host-based dispatch for the kotobase protocol surfaces
-  (ADR-2607171700):
+  (ADR-2607171700, ADR-2607172210):
 
     s3.<apex>       → kotobase.protocols.s3
     ipfs.<apex>     → kotobase.protocols.ipfs
     atproto.<apex>  → kotobase.protocols.atproto
     git.<apex>      → kotobase.protocols.git
+    pinning.<apex>  → kotobase.protocols.ipfs-pinning
 
   plus a single-origin fallback for deploys that only own one
-  hostname: /ipfs/* and /xrpc/* dispatch by their protocol-inherent
-  prefixes, /s3/* and /git/* by stripped mount prefixes.
+  hostname: /ipfs/*, /xrpc/* and /pins/* dispatch by their
+  protocol-inherent prefixes (/pins is the exact path shape the
+  ipfs.github.io pinning-services-api-spec itself uses, so it doubles
+  as both the single-origin mount and the spec-native path — no
+  stripping needed), /s3/* and /git/* by stripped mount prefixes.
+
+  ROUTING NOTE — why `pinning` gets its own subdomain instead of
+  reusing `ipfs`: kotobase.protocols.ipfs documents its HTTP surface as
+  READ-ONLY BY DESIGN (blast-radius principle, ADR-2607072000) — GET on
+  ipfs.<apex> is meant to always be side-effect-free. The Pinning
+  Service API is a write surface (POST/DELETE /pins) that happens to
+  share the same underlying block space; mounting it under the `ipfs`
+  subdomain would blur that read-only invariant at the *routing* layer
+  even though the handler code stays separate. A distinct `pinning`
+  subdomain keeps 'ipfs.<apex> is always safe to GET' mechanically true,
+  mirrors how real pinning services are actually deployed (a separate
+  host/API from the gateway, e.g. Pinata's api.pinata.cloud/psa vs. a
+  plain IPFS gateway), and gives a deploy shell one clean place to gate
+  write-capable auth (the Pinning API's bearer token) without
+  special-casing paths under a nominally read-only host.
 
   The apex defaults to \"kotobase.net\" but is injectable — the same
   router serves a self-hosted mesh peer on any domain. This module
@@ -22,13 +41,15 @@
             [kotobase.protocols.git :as git]
             [kotobase.protocols.http :as http]
             [kotobase.protocols.ipfs :as ipfs]
+            [kotobase.protocols.ipfs-pinning :as ipfs-pinning]
             [kotobase.protocols.s3 :as s3]))
 
 (def surfaces
   {"s3" s3/handle
    "ipfs" ipfs/handle
    "atproto" atproto/handle
-   "git" git/handle})
+   "git" git/handle
+   "pinning" ipfs-pinning/handle})
 
 (defn surface-of
   "\"s3.kotobase.net\" + apex \"kotobase.net\" → \"s3\"; nil when host
@@ -53,6 +74,7 @@
         (str/starts-with? path "/ipfs/") (ipfs/handle ctx req)
         (str/starts-with? path "/ipns/") (ipfs/handle ctx req)
         (str/starts-with? path "/xrpc/") (atproto/handle ctx req)
+        (str/starts-with? path "/pins")  (ipfs-pinning/handle ctx req)
         (str/starts-with? path "/s3/")   (s3/handle ctx (strip-prefix req "/s3"))
         (str/starts-with? path "/git/")  (git/handle ctx (strip-prefix req "/git"))
         :else (http/not-found "no protocol surface for this host/path")))))

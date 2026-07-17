@@ -3,9 +3,10 @@
 [![CI](https://github.com/kotoba-lang/kotobase-protocols/actions/workflows/ci.yml/badge.svg)](https://github.com/kotoba-lang/kotobase-protocols/actions/workflows/ci.yml)
 
 **Storage / protocol surfaces projected onto [kotobase](https://github.com/kotoba-lang/kotobase)**
-— one datom/document/block plane, four wire protocols
-(ADR-2607171700 in `com-junkawasaki/root`; addressing contract: the
-Kotoba Resource Protocol, `90-docs/protocols/kotoba-resource-protocol.md`).
+— one datom/document/block plane, five wire protocols
+(ADR-2607171700 + ADR-2607172210 in `com-junkawasaki/root`; addressing
+contract: the Kotoba Resource Protocol,
+`90-docs/protocols/kotoba-resource-protocol.edn`).
 
 Every surface is a **pure cljc handler** over the injected
 `kotobase.store/IStore` — the same seam that lets an app run standalone on
@@ -18,12 +19,44 @@ worker, fleet peer) own transport and authentication, exactly as
 |---|---|---|---|
 | `s3.<apex>` | `kotobase.protocols.s3` | PUT/GET/HEAD/DELETE object, ListObjectsV2 | §3.4 Location |
 | `ipfs.<apex>` | `kotobase.protocols.ipfs` | GET/HEAD `/ipfs/{cid}` (read-only gateway) | §3.3 Content |
+| `pinning.<apex>` | `kotobase.protocols.ipfs-pinning` | [IPFS Pinning Service API](https://ipfs.github.io/pinning-services-api-spec/): `POST/GET /pins`, `GET/DELETE /pins/{requestid}` | §3.3 Content |
 | `atproto.<apex>` | `kotobase.protocols.atproto` | XRPC `com.atproto.repo.{get,put,delete,list}Record*`, `sync.getBlob` | §3.2 Record |
 | `git.<apex>` | `kotobase.protocols.git` | dumb-HTTP `info/refs`, `HEAD`, loose objects (read) | §3.1/§3.4 |
 
 `kotobase.protocols.router` dispatches by subdomain (`s3.kotobase.net`, …)
 with a single-origin path-prefix fallback (`/s3/*`, `/xrpc/*`, `/ipfs/*`,
-`/git/*`), apex injectable for self-hosted peers.
+`/pins*`, `/git/*`), apex injectable for self-hosted peers.
+
+### IPFS Pinning Service API (`pinning.<apex>` / `ipfs-pinning.cljc`)
+
+Extends the same shared block space `ipfs.cljc` already serves read-only
+(ADR-2607172210 — this stays inside `kotobase-protocols` rather than
+becoming a 4th IPFS-adjacent repo, since three homes for this exact block
+space already exist: this repo's `ipfs.cljc` gateway, the general
+`kotoba-lang/ipfs` implementation library, and the public product surface
+`gftdcojp/net-kotobase-ipfs`). Mounted on its own `pinning` subdomain rather
+than folded into `ipfs`'s — see the routing note at the top of `router.cljc`
+for why: `ipfs.cljc` is documented READ-ONLY BY DESIGN, and a write-capable
+API deserves its own host/auth boundary rather than blurring that
+invariant.
+
+**Honest limitation, read before using**: v0.1 has **no background pinning
+daemon**. `POST /pins` decides the outcome synchronously, at request time,
+by checking whether the block is already present locally
+(`blocks/get-block`):
+
+- block present  → `status: "pinned"` immediately.
+- block missing  → `status: "failed"` immediately, with an `info.reason`
+  explaining why — **not** `"queued"`. The `origins` field is accepted and
+  stored (API-shape compatible) but never dialed; there is no peer fetch,
+  no retry, no background worker that could ever complete a queued
+  request. If you need a pin to succeed, `blocks/put-block!` the CID first
+  (inside an authenticated deploy shell, same as `ipfs.cljc`'s own write
+  path), then `POST /pins`.
+
+`DELETE /pins/{requestid}` removes the pin *request* only — the underlying
+block is untouched, since multiple pin requests may reference the same
+block (same content-addressed dedup principle as `blocks.cljc`).
 
 ```clojure
 (require '[kotobase.local :as local]

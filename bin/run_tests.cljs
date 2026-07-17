@@ -11,6 +11,7 @@
             [kotobase.protocols.atproto-test]
             [kotobase.protocols.cid-test]
             [kotobase.protocols.git-test]
+            [kotobase.protocols.ipfs-pinning-test]
             [kotobase.protocols.ipfs-test]
             [kotobase.protocols.json-test]
             [kotobase.protocols.router-test]
@@ -24,6 +25,7 @@
              'kotobase.protocols.cid-test
              'kotobase.protocols.s3-test
              'kotobase.protocols.ipfs-test
+             'kotobase.protocols.ipfs-pinning-test
              'kotobase.protocols.atproto-test
              'kotobase.protocols.git-test
              'kotobase.protocols.router-test)

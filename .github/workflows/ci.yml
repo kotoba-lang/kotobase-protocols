@@ -1,0 +1,22 @@
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  nbb-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: kotoba-lang/kotobase
+          # Same pin as deps.edn — keep the two in lockstep.
+          ref: bbf57df9dde5c1869182012860129a598382e088
+          path: .deps/kotobase
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm install --global nbb
+      - run: nbb --classpath "src:test:.deps/kotobase/src" bin/run_tests.cljs

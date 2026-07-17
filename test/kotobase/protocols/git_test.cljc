@@ -1,5 +1,6 @@
 (ns kotobase.protocols.git-test
-  (:require [clojure.test :refer [deftest is testing]]
+  (:require [clojure.string :as str]
+            [clojure.test :refer [deftest is testing]]
             [kotobase.local :as local]
             [kotobase.protocols.git :as git]))
 
@@ -80,6 +81,18 @@
                                          :body "not-a-sha"}))))
       (is (= 400 (:status (git/handle c {:method :put :path "/o/r/HEAD"
                                          :body "gibberish"})))))
+    (testing "a ref whose NAME ends in HEAD (e.g. refs/remotes/origin/HEAD,
+             which real `git for-each-ref` output includes) is a ref
+             write, not the repo's own HEAD symref"
+      (is (= 200 (:status (git/handle c {:method :put
+                                         :path "/o/r/refs/remotes/origin/HEAD"
+                                         :body sha1}))))
+      (is (= "ref: refs/heads/main\n"
+             (:body (git/handle c {:method :get :path "/o/r/HEAD"})))
+          "the repo's own HEAD symref, set earlier in this test, must survive unchanged")
+      (is (str/includes? (:body (git/handle c {:method :get :path "/o/r/info/refs"}))
+                         "refs/remotes/origin/HEAD")
+          "the remote-tracking HEAD shows up as an ordinary ref"))
     (testing "dumb-transport probes return empty 200"
       (is (= 200 (:status (git/handle c {:method :get
                                          :path "/o/r/objects/info/packs"}))))

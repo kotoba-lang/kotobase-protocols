@@ -124,7 +124,14 @@
   [store req segs n]
   (let [body (:body req)]
     (cond
-      (and (>= n 2) (= "HEAD" (peek segs)))
+      ;; The repo's OWN top-level HEAD symref — NOT any ref whose NAME
+      ;; happens to end in \"HEAD\" (e.g. refs/remotes/origin/HEAD, a
+      ;; real 40-hex-sha-valued ref some git checkouts carry). Guarding
+      ;; on \"no 'refs' segment anywhere in the path\" tells the two
+      ;; apart; without it this branch swallowed refs/…/HEAD writes and
+      ;; rejected their sha body as an invalid symref line (found live
+      ;; seeding a real repo's for-each-ref output, ADR-2607177500).
+      (and (>= n 2) (= "HEAD" (peek segs)) (not-any? #(= "refs" %) segs))
       (let [repo (str/join "/" (subvec segs 0 (dec n)))]
         (if (and body (str/starts-with? body "ref: refs/"))
           (do (st/-put store (refs-coll repo) "HEAD" (str/trim body))

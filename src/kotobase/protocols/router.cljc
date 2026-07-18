@@ -7,13 +7,15 @@
     atproto.<apex>  → kotobase.protocols.atproto
     git.<apex>      → kotobase.protocols.git
     pinning.<apex>  → kotobase.protocols.ipfs-pinning
+    issues.<apex>   → kotobase.protocols.issue
 
   plus a single-origin fallback for deploys that only own one
   hostname: /ipfs/*, /xrpc/* and /pins/* dispatch by their
   protocol-inherent prefixes (/pins is the exact path shape the
   ipfs.github.io pinning-services-api-spec itself uses, so it doubles
   as both the single-origin mount and the spec-native path — no
-  stripping needed), /s3/* and /git/* by stripped mount prefixes.
+  stripping needed), /s3/*, /git/* and /issues/* by stripped mount
+  prefixes.
 
   ROUTING NOTE — why `pinning` gets its own subdomain instead of
   reusing `ipfs`: kotobase.protocols.ipfs documents its HTTP surface as
@@ -42,6 +44,7 @@
             [kotobase.protocols.http :as http]
             [kotobase.protocols.ipfs :as ipfs]
             [kotobase.protocols.ipfs-pinning :as ipfs-pinning]
+            [kotobase.protocols.issue :as issue]
             [kotobase.protocols.s3 :as s3]))
 
 (def surfaces
@@ -49,7 +52,8 @@
    "ipfs" ipfs/handle
    "atproto" atproto/handle
    "git" git/handle
-   "pinning" ipfs-pinning/handle})
+   "pinning" ipfs-pinning/handle
+   "issues" issue/handle})
 
 (defn surface-of
   "\"s3.kotobase.net\" + apex \"kotobase.net\" → \"s3\"; nil when host
@@ -77,4 +81,5 @@
         (str/starts-with? path "/pins")  (ipfs-pinning/handle ctx req)
         (str/starts-with? path "/s3/")   (s3/handle ctx (strip-prefix req "/s3"))
         (str/starts-with? path "/git/")  (git/handle ctx (strip-prefix req "/git"))
+        (str/starts-with? path "/issues/") (issue/handle ctx (strip-prefix req "/issues"))
         :else (http/not-found "no protocol surface for this host/path")))))

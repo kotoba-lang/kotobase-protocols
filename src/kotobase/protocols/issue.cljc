@@ -16,6 +16,19 @@
   audit vocabulary, over the same `kotobase.store/IStore` seam every
   other surface in this repo uses.
 
+  WIRE FORMAT IS EDN, NOT JSON. Every other surface here (s3/atproto/
+  git/pinning) speaks JSON because an external spec forces it
+  (AT-Proto XRPC, the Pinning Service API). This surface has no such
+  constraint — it is internal-only, Clojure-shaped data (`:issue/*`
+  keys) all the way down to the IStore docs, so the wire format stays
+  EDN rather than round-tripping through a JSON string-key convention.
+  `pr-str`/`clojure.edn/read-string` (already the convention this
+  workspace's other JSONL-adjacent code uses for embedded blobs, e.g.
+  `local-manimani`'s `manimani.issue-store`) — no separate codec
+  namespace needed the way `kotobase.protocols.json` exists for XRPC.
+  Request/response bodies are `pr-str`'d maps with keyword keys;
+  content-type is `application/edn`.
+
   Mapping (one doc per entity, IStore doc space):
     issue     → [:kotobase.issue/issues repo] id → {:issue/id :issue/title
                 :issue/body :issue/status \"open\"|\"closed\" :issue/author
@@ -35,12 +48,12 @@
   function of the injected store (no local mutable counter state).
 
   Endpoints (repo = first 2 path segments, org/repo):
-    POST /{org}/{repo}/issues                    create — body {title, body?, author?}
+    POST /{org}/{repo}/issues                    create — body {:title :body? :author?}
     GET  /{org}/{repo}/issues                     list (status= filter)
     GET  /{org}/{repo}/issues/{id}                one issue + its proposal ids
-    POST /{org}/{repo}/issues/{id}/proposals      propose — body {rationale, risk?, author?}
+    POST /{org}/{repo}/issues/{id}/proposals      propose — body {:rationale :risk? :author?}
     GET  /{org}/{repo}/proposals/{id}             one proposal + its reviews
-    POST /{org}/{repo}/proposals/{id}/reviews      review — body {verdict, comment?, reviewer?}
+    POST /{org}/{repo}/proposals/{id}/reviews      review — body {:verdict :comment? :reviewer?}
     POST /{org}/{repo}/proposals/{id}/merge        merge — requires >=1 approve review
 
   v0.1 HONESTY NOTE — deliberately out of scope (documented, not
@@ -52,9 +65,9 @@
   Write auth is the deploy shell's job same as every other surface in
   this repo (CACAO/Bearer/SigV4 — see kotobase-protocols-worker's
   README, `Auth` section)."
-  (:require [clojure.string :as str]
+  (:require [clojure.edn :as edn]
+            [clojure.string :as str]
             [kotobase.protocols.http :as http]
-            [kotobase.protocols.json :as json]
             [kotobase.store :as st]))
 
 ;; ------------------------------------------------------------- colls
@@ -67,10 +80,10 @@
 
 ;; ------------------------------------------------------------- helpers
 
-(defn- json-response [status m]
-  (http/response status {"content-type" "application/json"} (json/encode m)))
+(defn- edn-response [status m]
+  (http/response status {"content-type" "application/edn"} (pr-str m)))
 
-(defn- issue-error [status reason] (json-response status {"error" reason}))
+(defn- issue-error [status reason] (edn-response status {:error reason}))
 
 (defn- audit! [store repo op id]
   (st/-append store :kotobase.protocols/audit
@@ -85,23 +98,23 @@
   (str (:seq (st/-append store [:kotobase.issue/id-seq repo] {}))))
 
 (defn- parse-body [req]
-  (try (json/parse (or (:body req) "{}"))
+  (try (edn/read-string (or (:body req) "{}"))
        (catch #?(:clj Exception :cljs :default) _ nil)))
 
-(defn- issue->json [{:issue/keys [id title body status author created]}]
-  (cond-> {"id" id "title" title "status" status "created" created}
-    body (assoc "body" body)
-    author (assoc "author" author)))
+(defn- issue->edn [{:issue/keys [id title body status author created]}]
+  (cond-> {:id id :title title :status status :created created}
+    body (assoc :body body)
+    author (assoc :author author)))
 
-(defn- proposal->json [{:proposal/keys [id issue-id rationale risk status author created]}]
-  (cond-> {"id" id "issueId" issue-id "rationale" rationale "status" status "created" created}
-    risk (assoc "risk" risk)
-    author (assoc "author" author)))
+(defn- proposal->edn [{:proposal/keys [id issue-id rationale risk status author created]}]
+  (cond-> {:id id :issue-id issue-id :rationale rationale :status status :created created}
+    risk (assoc :risk risk)
+    author (assoc :author author)))
 
-(defn- review->json [{:review/keys [id proposal-id verdict comment reviewer created]}]
-  (cond-> {"id" id "proposalId" proposal-id "verdict" verdict "created" created}
-    comment (assoc "comment" comment)
-    reviewer (assoc "reviewer" reviewer)))
+(defn- review->edn [{:review/keys [id proposal-id verdict comment reviewer created]}]
+  (cond-> {:id id :proposal-id proposal-id :verdict verdict :created created}
+    comment (assoc :comment comment)
+    reviewer (assoc :reviewer reviewer)))
 
 (defn- list-coll [store coll]
   (->> (st/-list store coll)
@@ -111,7 +124,7 @@
 ;; ---------------------------------------------------------- issues
 
 (defn- create-issue [store now repo body]
-  (let [{title "title" body-text "body" author "author"} body]
+  (let [{title :title body-text :body author :author} body]
     (if-not (string? title)
       (issue-error 400 "title is required")
       (let [id (next-id! store repo)
@@ -119,29 +132,29 @@
                  :issue/status "open" :issue/author author :issue/created now}]
         (st/-put store (issues-coll repo) id doc)
         (audit! store repo :create-issue id)
-        (json-response 201 (issue->json doc))))))
+        (edn-response 201 (issue->edn doc))))))
 
 (defn- get-issue [store repo id]
   (if-let [doc (st/-get store (issues-coll repo) id)]
     (let [proposal-ids (->> (list-coll store (proposals-coll repo))
                             (filter (fn [[_ p]] (= id (:proposal/issue-id p))))
                             (map first))]
-      (json-response 200 (assoc (issue->json doc) "proposalIds" (vec proposal-ids))))
+      (edn-response 200 (assoc (issue->edn doc) :proposal-ids (vec proposal-ids))))
     (issue-error 404 "issue not found")))
 
 (defn- list-issues [store repo req]
   (let [status-filter (http/query-param req "status")
         entries (cond->> (list-coll store (issues-coll repo))
                   status-filter (filter (fn [[_ d]] (= status-filter (:issue/status d)))))]
-    (json-response 200 {"count" (count entries)
-                        "results" (mapv (fn [[_ d]] (issue->json d)) entries)})))
+    (edn-response 200 {:count (count entries)
+                       :results (mapv (fn [[_ d]] (issue->edn d)) entries)})))
 
 ;; ------------------------------------------------------- proposals
 
 (defn- create-proposal [store now repo issue-id body]
   (if-not (st/-get store (issues-coll repo) issue-id)
     (issue-error 404 "issue not found")
-    (let [{:strs [rationale risk author]} body]
+    (let [{:keys [rationale risk author]} body]
       (if-not (string? rationale)
         (issue-error 400 "rationale is required")
         (let [id (next-id! store repo)
@@ -151,14 +164,14 @@
                    :proposal/created now}]
           (st/-put store (proposals-coll repo) id doc)
           (audit! store repo :propose id)
-          (json-response 201 (proposal->json doc)))))))
+          (edn-response 201 (proposal->edn doc)))))))
 
 (defn- get-proposal [store repo id]
   (if-let [doc (st/-get store (proposals-coll repo) id)]
     (let [reviews (->> (list-coll store (reviews-coll repo))
                        (filter (fn [[_ r]] (= id (:review/proposal-id r))))
-                       (map (fn [[_ r]] (review->json r))))]
-      (json-response 200 (assoc (proposal->json doc) "reviews" (vec reviews))))
+                       (map (fn [[_ r]] (review->edn r))))]
+      (edn-response 200 (assoc (proposal->edn doc) :reviews (vec reviews))))
     (issue-error 404 "proposal not found")))
 
 ;; --------------------------------------------------------- reviews
@@ -169,7 +182,7 @@
     (issue-error 404 "proposal not found")
 
     :else
-    (let [{:strs [verdict comment reviewer]} body]
+    (let [{:keys [verdict comment reviewer]} body]
       (if-not (contains? valid-verdicts verdict)
         (issue-error 400 (str "verdict must be one of " (str/join ", " (sort valid-verdicts))))
         (let [id (next-id! store repo)
@@ -177,7 +190,7 @@
                    :review/comment comment :review/reviewer reviewer :review/created now}]
           (st/-put store (reviews-coll repo) id doc)
           (audit! store repo :review id)
-          (json-response 201 (review->json doc)))))))
+          (edn-response 201 (review->edn doc)))))))
 
 ;; ----------------------------------------------------------- merge
 
@@ -199,7 +212,7 @@
       (let [merged (assoc doc :proposal/status "merged")]
         (st/-put store (proposals-coll repo) proposal-id merged)
         (audit! store repo :merge proposal-id)
-        (json-response 200 (proposal->json merged))))))
+        (edn-response 200 (proposal->edn merged))))))
 
 ;; ---------------------------------------------------------- routing
 
@@ -223,7 +236,7 @@
         (cond
           (and (= 1 n) (= "issues" (first rest)) (= :post method))
           (let [body (parse-body req)]
-            (if (nil? body) (issue-error 400 "malformed JSON body")
+            (if (nil? body) (issue-error 400 "malformed EDN body")
                 (create-issue store now repo body)))
 
           (and (= 1 n) (= "issues" (first rest)) (= :get method))
@@ -234,7 +247,7 @@
 
           (and (= 3 n) (= "issues" (first rest)) (= "proposals" (nth rest 2)) (= :post method))
           (let [body (parse-body req)]
-            (if (nil? body) (issue-error 400 "malformed JSON body")
+            (if (nil? body) (issue-error 400 "malformed EDN body")
                 (create-proposal store now repo (second rest) body)))
 
           (and (= 2 n) (= "proposals" (first rest)) (= :get method))
@@ -242,7 +255,7 @@
 
           (and (= 3 n) (= "proposals" (first rest)) (= "reviews" (nth rest 2)) (= :post method))
           (let [body (parse-body req)]
-            (if (nil? body) (issue-error 400 "malformed JSON body")
+            (if (nil? body) (issue-error 400 "malformed EDN body")
                 (create-review store now repo (second rest) body)))
 
           (and (= 3 n) (= "proposals" (first rest)) (= "merge" (nth rest 2)) (= :post method))

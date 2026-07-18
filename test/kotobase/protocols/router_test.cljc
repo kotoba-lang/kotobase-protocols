@@ -19,6 +19,14 @@
 
 (deftest host-based-dispatch
   (let [c (ctx)]
+    (testing "every protocol subdomain has a no-store health boundary"
+      (doseq [surface ["s3" "ipfs" "atproto" "git"]
+              :let [res (router/handle c {:method :get
+                                          :host (str surface ".kotobase.net")
+                                          :path "/health"})]]
+        (is (= 200 (:status res)))
+        (is (= "no-store" (get-in res [:headers "cache-control"])))
+        (is (str/includes? (:body res) (str ":surface :" surface)))))
     (testing "s3 subdomain round-trip"
       (is (= 200 (:status (router/handle c {:method :put :host "s3.kotobase.net"
                                             :path "/bkt/k" :body "v"}))))

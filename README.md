@@ -19,11 +19,15 @@ worker, fleet peer) own transport and authentication, exactly as
 | `s3.<apex>` | `kotobase.protocols.s3` | PUT/GET/HEAD/DELETE object, ListObjectsV2 | §3.4 Location |
 | `ipfs.<apex>` | `kotobase.protocols.ipfs` | GET/HEAD `/ipfs/{cid}` (read-only gateway) | §3.3 Content |
 | `atproto.<apex>` | `kotobase.protocols.atproto` | XRPC `com.atproto.repo.{get,put,delete,list}Record*`, `sync.getBlob` | §3.2 Record |
-| `git.<apex>` | `kotobase.protocols.git` | dumb-HTTP `info/refs`, `HEAD`, loose objects (read) | §3.1/§3.4 |
+| `git.<apex>` | `kotobase.protocols.git` | dumb-HTTP fetch plus signed `git-remote-kotobase` push | §3.1/§3.4 |
 
 `kotobase.protocols.router` dispatches by subdomain (`s3.kotobase.net`, …)
 with a single-origin path-prefix fallback (`/s3/*`, `/xrpc/*`, `/ipfs/*`,
 `/git/*`), apex injectable for self-hosted peers.
+
+Every recognized protocol subdomain also answers `GET /health` with a
+no-store EDN status document. This is the deploy-shell readiness boundary;
+it proves routing and handler availability, not backing-store durability.
 
 ```clojure
 (require '[kotobase.local :as local]
@@ -65,6 +69,34 @@ nbb --classpath "src:test:.deps/kotobase/src" bin/run_tests.cljs
 ```
 
 The `:test` alias in `deps.edn` is the JVM **compat** suite only.
+
+## Cloudflare deploy shell
+
+`worker/git-worker.mjs` is the host-only transport/persistence adapter for
+`git.kotobase.net`. D1 performs compare-and-set ref transactions and R2 stores
+verified Git loose objects by content identity. Before D1 adopts a ref, the
+helper commits its signed-ref datoms to the actor's CACAO-authorized Kotobase
+graph and the Worker independently reads them back with the same short-lived
+capability. D1 is the compare-and-set serving mirror, not the only authority.
+`bin/git-remote-kotobase.mjs`
+provides the Git remote-helper protocol, so ordinary `git push` uploads the
+reachable object graph and advances a ref. Every write has a replay-protected
+Ed25519 request signature; every ref update additionally carries the exact
+RID/ref/commit/timestamp signed-ref tuple defined by `nekko.sigref`. Request
+signatures bind the sigref, graph CID, Kotobase commit CID and a CACAO digest;
+the capability itself is never persisted in audit records. Server-side
+ancestry traversal enforces bonsai fast-forward policy across multi-commit
+pushes. Force and delete updates are rejected by both the helper and authority.
+
+Set `KOTOBASE_GIT_PRIVATE_KEY` to an Ed25519 PKCS8 PEM (literal newlines or
+escaped `\\n`) or base64 DER and make this package's `bin/` available on PATH:
+
+```bash
+git remote add origin kotobase::https://git.kotobase.net/org/repo
+git push origin main:refs/heads/main
+```
+
+Deployments must use the superproject resource guard.
 
 ## License
 

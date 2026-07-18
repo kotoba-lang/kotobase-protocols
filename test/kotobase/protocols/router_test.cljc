@@ -1,5 +1,6 @@
 (ns kotobase.protocols.router-test
-  (:require [clojure.string :as str]
+  (:require [clojure.edn :as edn]
+            [clojure.string :as str]
             [clojure.test :refer [deftest is testing]]
             [kotobase.local :as local]
             [kotobase.protocols.blocks :as blocks]
@@ -39,12 +40,12 @@
                                   :path "/pins" :body (json/encode {"cid" "bafypinme"})})]
         (is (= 202 (:status res)))
         (is (= "pinned" (get (json/parse (:body res)) "status")))))
-    (testing "issues subdomain"
+    (testing "issues subdomain (EDN wire format, not JSON)"
       (let [res (router/handle c {:method :post :host "issues.kotobase.net"
                                   :path "/gftdcojp/local-manimani/issues"
-                                  :body (json/encode {"title" "hello"})})]
+                                  :body (pr-str {:title "hello"})})]
         (is (= 201 (:status res)))
-        (is (= "hello" (get (json/parse (:body res)) "title")))))))
+        (is (= "hello" (:title (edn/read-string (:body res)))))))))
 
 (deftest single-origin-fallback
   (let [c (ctx)]
@@ -64,7 +65,7 @@
     (testing "/issues/* mounts the issue surface with the prefix stripped"
       (let [res (router/handle c {:method :post :host "peer.local"
                                   :path "/issues/gftdcojp/local-manimani/issues"
-                                  :body (json/encode {"title" "hi"})})]
+                                  :body (pr-str {:title "hi"})})]
         (is (= 201 (:status res)))))
     (let [res (router/handle c {:method :get :host "peer.local" :path "/other"})]
       (is (= 404 (:status res)))

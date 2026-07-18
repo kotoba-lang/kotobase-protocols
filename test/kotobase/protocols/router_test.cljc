@@ -38,7 +38,13 @@
       (let [res (router/handle c {:method :post :host "pinning.kotobase.net"
                                   :path "/pins" :body (json/encode {"cid" "bafypinme"})})]
         (is (= 202 (:status res)))
-        (is (= "pinned" (get (json/parse (:body res)) "status")))))))
+        (is (= "pinned" (get (json/parse (:body res)) "status")))))
+    (testing "issues subdomain"
+      (let [res (router/handle c {:method :post :host "issues.kotobase.net"
+                                  :path "/gftdcojp/local-manimani/issues"
+                                  :body (json/encode {"title" "hello"})})]
+        (is (= 201 (:status res)))
+        (is (= "hello" (get (json/parse (:body res)) "title")))))))
 
 (deftest single-origin-fallback
   (let [c (ctx)]
@@ -55,6 +61,11 @@
                                   :body (json/encode {"cid" "bafypeerpin"})})]
         (is (= 202 (:status res)))
         (is (= "pinned" (get (json/parse (:body res)) "status")))))
+    (testing "/issues/* mounts the issue surface with the prefix stripped"
+      (let [res (router/handle c {:method :post :host "peer.local"
+                                  :path "/issues/gftdcojp/local-manimani/issues"
+                                  :body (json/encode {"title" "hi"})})]
+        (is (= 201 (:status res)))))
     (let [res (router/handle c {:method :get :host "peer.local" :path "/other"})]
       (is (= 404 (:status res)))
       (is (str/includes? (:body res) "no protocol surface")))))

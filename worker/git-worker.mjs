@@ -16,6 +16,20 @@ const hex = (bytes) => [...new Uint8Array(bytes)].map((x) => x.toString(16).padS
 const b64urlBytes = (s) => Uint8Array.from(atob(s.replace(/-/g, "+").replace(/_/g, "/").padEnd(Math.ceil(s.length / 4) * 4, "=")), (c) => c.charCodeAt(0));
 const unhex = (s) => Uint8Array.from((s.match(/../g) || []), (x) => Number.parseInt(x, 16));
 
+async function adminAuthorized(request, env) {
+  if (!env.ADMIN_TOKEN) return false;
+  const header = request.headers.get("authorization") || "";
+  if (!header.startsWith("Bearer ")) return false;
+  const [presented, expected] = await Promise.all([
+    crypto.subtle.digest("SHA-256", enc.encode(header.slice(7))),
+    crypto.subtle.digest("SHA-256", enc.encode(env.ADMIN_TOKEN)),
+  ]);
+  const a = new Uint8Array(presented), b = new Uint8Array(expected);
+  let mismatch = a.length ^ b.length;
+  for (let i = 0; i < Math.min(a.length, b.length); i += 1) mismatch |= a[i] ^ b[i];
+  return mismatch === 0;
+}
+
 function decodeCbor(bytes) {
   let offset = 0;
   const readLength = (additional) => {
@@ -457,8 +471,12 @@ export default { async fetch(request, env) {
       auth: "nekko-sigref+delegated-cacao-chain+distinct-signer-quorum", protocol: "git-dumb-http+remote-helper" }, 200, { "cache-control": "no-store" });
   }
   if (request.method === "GET" && url.pathname === "/xrpc/kotobase.git.ref.get") return refMetadata(env, url);
-  if (url.pathname.startsWith("/xrpc/kotobase.git.")) return signedWrite(request, env, url);
+  if (url.pathname.startsWith("/xrpc/kotobase.git.")) {
+    if (!(await adminAuthorized(request, env)))
+      return json({ ok: false, error: "Unauthorized", message: "writes require a bearer token" }, 401);
+    return signedWrite(request, env, url);
+  }
   return gitRead(request, env, url);
 }, async scheduled(_controller, env, ctx) { ctx.waitUntil(flushOutbox(env)); }};
 
-export { decodeCbor, rawCid, verifyCacao, verifyCacaoChain };
+export { adminAuthorized, decodeCbor, rawCid, verifyCacao, verifyCacaoChain };

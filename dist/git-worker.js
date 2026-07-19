@@ -18,6 +18,20 @@ var enc = new TextEncoder();
 var hex = /* @__PURE__ */ __name((bytes) => [...new Uint8Array(bytes)].map((x) => x.toString(16).padStart(2, "0")).join(""), "hex");
 var b64urlBytes = /* @__PURE__ */ __name((s) => Uint8Array.from(atob(s.replace(/-/g, "+").replace(/_/g, "/").padEnd(Math.ceil(s.length / 4) * 4, "=")), (c) => c.charCodeAt(0)), "b64urlBytes");
 var unhex = /* @__PURE__ */ __name((s) => Uint8Array.from(s.match(/../g) || [], (x) => Number.parseInt(x, 16)), "unhex");
+async function adminAuthorized(request, env) {
+  if (!env.ADMIN_TOKEN) return false;
+  const header = request.headers.get("authorization") || "";
+  if (!header.startsWith("Bearer ")) return false;
+  const [presented, expected] = await Promise.all([
+    crypto.subtle.digest("SHA-256", enc.encode(header.slice(7))),
+    crypto.subtle.digest("SHA-256", enc.encode(env.ADMIN_TOKEN))
+  ]);
+  const a = new Uint8Array(presented), b = new Uint8Array(expected);
+  let mismatch = a.length ^ b.length;
+  for (let i = 0; i < Math.min(a.length, b.length); i += 1) mismatch |= a[i] ^ b[i];
+  return mismatch === 0;
+}
+__name(adminAuthorized, "adminAuthorized");
 function decodeCbor(bytes) {
   let offset = 0;
   const readLength = /* @__PURE__ */ __name((additional) => {
@@ -463,7 +477,19 @@ async function signedWrite(request, env, url) {
       eventQueued = true;
     } catch (_) {
     }
-    return json({ ok: true, repo, ref, old: currentSha, sha, kotobaseGraph, kotobaseCommit, eventId: event.id, eventQueued });
+    return json({
+      ok: true,
+      repo,
+      ref,
+      old: currentSha,
+      sha,
+      kotobaseGraph,
+      kotobaseCommit,
+      quorumRequired: policy.min_signers || 1,
+      quorumSigners: quorum.signers,
+      eventId: event.id,
+      eventQueued
+    });
   }
   if (url.pathname === "/xrpc/kotobase.git.delegate.set") {
     if (role !== "owner") return json({ ok: false, error: "OwnerRequired" }, 403);
@@ -569,12 +595,17 @@ var git_worker_default = { async fetch(request, env) {
     }, 200, { "cache-control": "no-store" });
   }
   if (request.method === "GET" && url.pathname === "/xrpc/kotobase.git.ref.get") return refMetadata(env, url);
-  if (url.pathname.startsWith("/xrpc/kotobase.git.")) return signedWrite(request, env, url);
+  if (url.pathname.startsWith("/xrpc/kotobase.git.")) {
+    if (!await adminAuthorized(request, env))
+      return json({ ok: false, error: "Unauthorized", message: "writes require a bearer token" }, 401);
+    return signedWrite(request, env, url);
+  }
   return gitRead(request, env, url);
 }, async scheduled(_controller, env, ctx) {
   ctx.waitUntil(flushOutbox(env));
 } };
 export {
+  adminAuthorized,
   decodeCbor,
   git_worker_default as default,
   rawCid,

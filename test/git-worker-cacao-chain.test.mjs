@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { generateKeyPairSync, sign } from "node:crypto";
-import { rawCid, verifyCacaoChain } from "../worker/git-worker.mjs";
+import { adminAuthorized, rawCid, verifyCacaoChain } from "../worker/git-worker.mjs";
 
 const alphabet = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
 function base58(bytes) {
@@ -58,4 +58,14 @@ test("canonical Git bytes receive a stable CIDv1 raw sha2-256 identity", async (
   assert.match(cid, /^bafkre[a-z2-7]{50,}$/);
   assert.equal(cid, await rawCid(bytes));
   assert.notEqual(cid, await rawCid(Buffer.from("blob 6\0hello!")));
+});
+
+test("write bearer authorization fails closed and accepts only the configured token", async () => {
+  assert.equal(await adminAuthorized(new Request("https://git.kotobase.net/xrpc/write"), {}), false);
+  assert.equal(await adminAuthorized(new Request("https://git.kotobase.net/xrpc/write", {
+    headers: { authorization: "Bearer wrong" },
+  }), { ADMIN_TOKEN: "right" }), false);
+  assert.equal(await adminAuthorized(new Request("https://git.kotobase.net/xrpc/write", {
+    headers: { authorization: "Bearer right" },
+  }), { ADMIN_TOKEN: "right" }), true);
 });

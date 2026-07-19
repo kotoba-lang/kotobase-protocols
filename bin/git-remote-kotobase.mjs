@@ -125,6 +125,8 @@ async function signedPut(path, body = Buffer.alloc(0), sigref = null, projection
     "x-nekko-signature": b64url(sign(null, Buffer.from(message), privateKey)),
     "x-nekko-timestamp": timestamp, "x-nekko-nonce": nonce, "x-nekko-authorization-hash": authorizationHash,
   };
+  if (process.env.KOTOBASE_GIT_TOKEN)
+    headers.authorization = `Bearer ${process.env.KOTOBASE_GIT_TOKEN}`;
   if (sigref) headers["x-nekko-sigref"] = sigrefHeader;
   if (approvalsHeader) headers["x-nekko-approvals"] = approvalsHeader;
   if (projection) {

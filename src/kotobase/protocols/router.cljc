@@ -89,4 +89,4 @@
         (str/starts-with? path "/s3/")   (s3/handle ctx (strip-prefix req "/s3"))
         (str/starts-with? path "/git/")  (git/handle ctx (strip-prefix req "/git"))
         (str/starts-with? path "/issues/") (issue/handle ctx (strip-prefix req "/issues"))
-        :else (http/not-found "no protocol surface for this host/path")))))
+        :else (http/not-found "no protocol surface for this host/path"))))))

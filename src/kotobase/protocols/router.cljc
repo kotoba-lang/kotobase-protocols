@@ -71,9 +71,16 @@
   "Route `req` to its protocol surface. ctx: {:store ... :now ...
   :apex \"kotobase.net\"}."
   [{:keys [apex] :or {apex "kotobase.net"} :as ctx} req]
-  (let [path (or (:path req) "")]
-    (if-let [handler (some-> (surface-of (:host req) apex) surfaces)]
-      (handler ctx req)
+  (let [path (or (:path req) "")
+        surface (surface-of (:host req) apex)]
+    (if (and (= :get (:method req)) (= "/health" path) (contains? surfaces surface))
+      (http/response 200
+                     {"content-type" "application/edn; charset=utf-8"
+                      "cache-control" "no-store"}
+                     (pr-str {:ok true :service (keyword (str "kotobase.protocols/" surface))
+                              :surface (keyword surface) :apex apex}))
+      (if-let [handler (get surfaces surface)]
+        (handler ctx req)
       (cond
         (str/starts-with? path "/ipfs/") (ipfs/handle ctx req)
         (str/starts-with? path "/ipns/") (ipfs/handle ctx req)
@@ -82,4 +89,4 @@
         (str/starts-with? path "/s3/")   (s3/handle ctx (strip-prefix req "/s3"))
         (str/starts-with? path "/git/")  (git/handle ctx (strip-prefix req "/git"))
         (str/starts-with? path "/issues/") (issue/handle ctx (strip-prefix req "/issues"))
-        :else (http/not-found "no protocol surface for this host/path")))))
+        :else (http/not-found "no protocol surface for this host/path"))))))

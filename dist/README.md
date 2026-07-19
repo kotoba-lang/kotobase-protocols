@@ -1,0 +1,1 @@
+This folder contains the built output assets for the worker "kotobase-git" generated at 2026-07-19T14:36:18.691Z.

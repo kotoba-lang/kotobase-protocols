@@ -8,6 +8,16 @@ const text = (value, status = 200, headers = {}) => new Response(value, {
   status, headers: { "content-type": "text/plain; charset=utf-8", ...headers },
 });
 const validRepo = (s) => /^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/.test(s);
+// PRIVATE_GIT_REPO_PREFIXES: comma-separated "org/repo" names (plain var,
+// not a secret) that opt OUT of this surface's default public-read design
+// (git.kotobase.net's dumb-HTTP read has never had any auth at all — see
+// the module docstring). A matching repo's GET/HEAD now needs the same
+// ADMIN_TOKEN bearer a write already requires. Every other repo is
+// untouched.
+const privateRepoPrefixes = (env) => (env.PRIVATE_GIT_REPO_PREFIXES || "")
+  .split(",").map((s) => s.trim()).filter(Boolean);
+const isPrivateRepo = (env, repo) => privateRepoPrefixes(env)
+  .some((prefix) => repo === prefix || repo.startsWith(`${prefix}/`));
 const validSha = (s) => /^[0-9a-f]{40}$/.test(s);
 const validRef = (s) => /^refs\/(heads|tags)\/[A-Za-z0-9._/-]+$/.test(s) && !s.includes("..") && !s.endsWith("/");
 const validDid = (s) => /^did:key:z[1-9A-HJ-NP-Za-km-z]{40,}$/.test(s);
@@ -415,17 +425,23 @@ async function gitRead(request, env, url) {
   const path = url.pathname.replace(/^\/+/, "");
   let m = path.match(/^([^/]+\/[^/]+)\/info\/refs$/);
   if (m) {
+    if (isPrivateRepo(env, m[1]) && !(await adminAuthorized(request, env)))
+      return json({ ok: false, error: "Unauthorized" }, 401);
     const rows = await env.GIT_DB.prepare("SELECT ref,sha FROM refs WHERE repo=? ORDER BY ref").bind(m[1]).all();
     if (!rows.results.length) return text("repository not found", 404);
     return text(rows.results.map((r) => `${r.sha}\t${r.ref}\n`).join(""));
   }
   m = path.match(/^([^/]+\/[^/]+)\/HEAD$/);
   if (m) {
+    if (isPrivateRepo(env, m[1]) && !(await adminAuthorized(request, env)))
+      return json({ ok: false, error: "Unauthorized" }, 401);
     const row = await env.GIT_DB.prepare("SELECT ref FROM heads WHERE repo=?").bind(m[1]).first();
     return row ? text(`ref: ${row.ref}\n`) : text("repository not found", 404);
   }
   m = path.match(/^([^/]+\/[^/]+)\/objects\/([0-9a-f]{2})\/([0-9a-f]{38})$/);
   if (m) {
+    if (isPrivateRepo(env, m[1]) && !(await adminAuthorized(request, env)))
+      return json({ ok: false, error: "Unauthorized" }, 401);
     const sha = `${m[2]}${m[3]}`;
     let value = await env.GIT_OBJECTS.get(`${m[1]}/objects/${m[2]}/${m[3]}`);
     if (!value) {

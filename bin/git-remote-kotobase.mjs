@@ -3,6 +3,12 @@ import { createHash, createPrivateKey, createPublicKey, randomUUID, sign } from 
 import { execFileSync } from "node:child_process";
 import { writeFileSync } from "node:fs";
 import { createInterface } from "node:readline";
+import { pathToFileURL } from "node:url";
+
+const fetchTimeoutMs = Math.max(1000, Number(process.env.KOTOBASE_GIT_FETCH_TIMEOUT_MS || "30000"));
+function fetchBounded(url, init = {}) {
+  return fetch(url, { ...init, signal: init.signal || AbortSignal.timeout(fetchTimeoutMs) });
+}
 
 process.stdout.on("error", (error) => {
   if (error.code === "EPIPE") process.exit(0);

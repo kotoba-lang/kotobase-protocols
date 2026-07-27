@@ -1,12 +1,12 @@
 (ns kotobase.protocols.ipfs-test
   (:require [clojure.test :refer [deftest is testing]]
-            [kotobase.protocols.store :as local]
+            [kotobase.local :as local]
             [kotobase.protocols.blocks :as blocks]
             [kotobase.protocols.ipfs :as ipfs]))
 
 (def cid "bafyreigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi")
 
-(defn- ctx [] {:store (local/memory-store)})
+(defn- ctx [] {:store (local/local-store)})
 
 (deftest gateway-serves-blocks
   (let [{:keys [store] :as c} (ctx)]
@@ -28,6 +28,14 @@
     (let [res (ipfs/handle c {:method :get :path (str "/ipfs/" cid)})]
       (is (= "application/octet-stream" (get-in res [:headers "content-type"]))
           "scriptable content types degrade to octet-stream"))))
+
+(deftest base64-blocks-flagged-for-shell-decode
+  (let [{:keys [store] :as c} (ctx)]
+    (blocks/put-block! store cid {:bytes "aGVsbG8=" :content-type "application/octet-stream"
+                                  :encoding "base64"})
+    (let [res (ipfs/handle c {:method :get :path (str "/ipfs/" cid)})]
+      (is (= "aGVsbG8=" (:body res)))
+      (is (= :base64 (:body-encoding res))))))
 
 (deftest missing-and-write-paths
   (let [c (ctx)]

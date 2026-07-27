@@ -4,13 +4,16 @@
 ;;   nbb --classpath "src:test:<kotobase>/src" bin/run_tests.cljs
 ;;
 ;; where <kotobase> is a checkout of kotoba-lang/kotobase (provides
-;; kotobase.protocols.store). CI uses the source-local memory host, so
+;; kotobase.store / kotobase.local). CI pins it to the same SHA as
 ;; deps.edn.
 (ns run-tests
   (:require [cljs.test :as t]
             [kotobase.protocols.atproto-test]
+            [kotobase.protocols.cid-test]
             [kotobase.protocols.git-test]
+            [kotobase.protocols.ipfs-pinning-test]
             [kotobase.protocols.ipfs-test]
+            [kotobase.protocols.issue-test]
             [kotobase.protocols.json-test]
             [kotobase.protocols.router-test]
             [kotobase.protocols.s3-test]))
@@ -20,8 +23,11 @@
     (set! (.-exitCode js/process) 1)))
 
 (t/run-tests 'kotobase.protocols.json-test
+             'kotobase.protocols.cid-test
              'kotobase.protocols.s3-test
              'kotobase.protocols.ipfs-test
+             'kotobase.protocols.ipfs-pinning-test
+             'kotobase.protocols.issue-test
              'kotobase.protocols.atproto-test
              'kotobase.protocols.git-test
              'kotobase.protocols.router-test)

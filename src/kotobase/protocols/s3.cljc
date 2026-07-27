@@ -1,9 +1,9 @@
 (ns kotobase.protocols.s3
   "s3.kotobase.net — an S3-compatible object surface projected onto the
-  protocol projection host (ADR-2607171700, KRP §3.4 Location).
+  kotobase IStore document space (ADR-2607171700, KRP §3.4 Location).
 
   Mapping:
-    bucket        → host collection [:kotobase.s3/objects <bucket>]
+    bucket        → IStore collection [:kotobase.s3/objects <bucket>]
     object key    → doc key (may contain '/')
     object value  → {:bytes :content-type :etag :last-modified}
     every write   → audit event on :kotobase.protocols/audit
@@ -23,12 +23,12 @@
   (:require [clojure.string :as str]
             [kotobase.protocols.hash :as hash]
             [kotobase.protocols.http :as http]
-            [kotobase.protocols.store :as st]))
+            [kotobase.store :as st]))
 
 (defn objects-coll [bucket] [:kotobase.s3/objects bucket])
 
 (defn- audit! [store op bucket k]
-  (st/append store :kotobase.protocols/audit
+  (st/-append store :kotobase.protocols/audit
               {:surface :s3 :op op :bucket bucket :key k}))
 
 (defn- xml-response [status body]
@@ -41,13 +41,13 @@
                      (http/xml-escape msg) "</Message></Error>")))
 
 (defn- list-objects [store bucket prefix]
-  ;; DELETE writes a nil tombstone (the legacy host has no remove op), so
+  ;; DELETE writes a nil tombstone (IStore docs have no remove op), so
   ;; listing keeps only keys whose doc is still present.
-  (let [entries (->> (st/list-keys store (objects-coll bucket))
+  (let [entries (->> (st/-list store (objects-coll bucket))
                      (filter #(str/starts-with? % (or prefix "")))
                      sort
                      (keep (fn [k]
-                             (when-let [o (st/get store (objects-coll bucket) k)]
+                             (when-let [o (st/-get store (objects-coll bucket) k)]
                                [k o]))))]
     (xml-response
      200
@@ -71,7 +71,7 @@
     (:last-modified o) (assoc "last-modified" (:last-modified o))))
 
 (defn handle
-  "S3 surface handler. `ctx` is {:store operation-map, :now optional ISO string}."
+  "S3 surface handler. `ctx` is {:store IStore, :now optional ISO string}."
   [{:keys [store now]} req]
   (let [[bucket & ks] (http/segments (:path req))
         k (when (seq ks) (str/join "/" ks))]
@@ -94,18 +94,18 @@
                                    "application/octet-stream")
                  :etag (hash/fingerprint body)
                  :last-modified now}]
-          (st/put store (objects-coll bucket) k o)
+          (st/-put store (objects-coll bucket) k o)
           (audit! store :put-object bucket k)
           (http/response 200 {"etag" (str "\"" (:etag o) "\"")} nil))
 
         (:get :head)
-        (if-let [o (st/get store (objects-coll bucket) k)]
+        (if-let [o (st/-get store (objects-coll bucket) k)]
           (http/response 200 (object-headers o)
                          (when (= :get (:method req)) (:bytes o)))
           (error-xml 404 "NoSuchKey" (str "no such key: " k)))
 
         :delete
-        (do (st/put store (objects-coll bucket) k nil)
+        (do (st/-put store (objects-coll bucket) k nil)
             (audit! store :delete-object bucket k)
             (http/response 204 {} nil))
 

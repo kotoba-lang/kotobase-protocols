@@ -8,7 +8,7 @@
   handle resolution here.
 
   Mapping:
-    (did, collection nsid) → host collection [:kotobase.at/records did nsid]
+    (did, collection nsid) → IStore collection [:kotobase.at/records did nsid]
     rkey                   → doc key
     record                 → doc value (JSON-decoded, string keys)
     blobs                  → shared block space (kotobase.protocols.blocks)
@@ -25,7 +25,7 @@
   (:require [kotobase.protocols.blocks :as blocks]
             [kotobase.protocols.http :as http]
             [kotobase.protocols.json :as json]
-            [kotobase.protocols.store :as st]))
+            [kotobase.store :as st]))
 
 (defn records-coll [did nsid] [:kotobase.at/records did nsid])
 
@@ -38,7 +38,7 @@
   (json-response status {"error" error "message" msg}))
 
 (defn- audit! [store op did nsid rkey]
-  (st/append store :kotobase.protocols/audit
+  (st/-append store :kotobase.protocols/audit
               {:surface :atproto :op op :did did :collection nsid :rkey rkey}))
 
 (defn- parse-body [req]
@@ -51,7 +51,7 @@
         rkey (http/query-param req "rkey")]
     (if-not (and did nsid rkey)
       (xrpc-error 400 "InvalidRequest" "repo, collection and rkey are required")
-      (if-let [record (st/get store (records-coll did nsid) rkey)]
+      (if-let [record (st/-get store (records-coll did nsid) rkey)]
         (json-response 200 {"uri" (at-uri did nsid rkey) "value" record})
         (xrpc-error 400 "RecordNotFound"
                     (str "record not found: " (at-uri did nsid rkey)))))))
@@ -61,10 +61,10 @@
         nsid (http/query-param req "collection")]
     (if-not (and did nsid)
       (xrpc-error 400 "InvalidRequest" "repo and collection are required")
-      (let [records (->> (st/list-keys store (records-coll did nsid))
+      (let [records (->> (st/-list store (records-coll did nsid))
                          sort
                          (keep (fn [rkey]
-                                 (when-let [v (st/get store (records-coll did nsid) rkey)]
+                                 (when-let [v (st/-get store (records-coll did nsid) rkey)]
                                    {"uri" (at-uri did nsid rkey) "value" v}))))]
         (json-response 200 {"records" (vec records)})))))
 
@@ -74,7 +74,7 @@
     (if-not (and repo collection rkey (map? record))
       (xrpc-error 400 "InvalidRequest"
                   "body must carry repo, collection, rkey and a record object")
-      (do (st/put store (records-coll repo collection) rkey record)
+      (do (st/-put store (records-coll repo collection) rkey record)
           (audit! store :put-record repo collection rkey)
           (json-response 200 {"uri" (at-uri repo collection rkey)})))))
 
@@ -82,7 +82,7 @@
   (let [{:strs [repo collection rkey]} (parse-body req)]
     (if-not (and repo collection rkey)
       (xrpc-error 400 "InvalidRequest" "body must carry repo, collection and rkey")
-      (do (st/put store (records-coll repo collection) rkey nil)
+      (do (st/-put store (records-coll repo collection) rkey nil)
           (audit! store :delete-record repo collection rkey)
           (json-response 200 {})))))
 

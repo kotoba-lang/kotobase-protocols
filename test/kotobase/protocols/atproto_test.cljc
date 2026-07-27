@@ -1,6 +1,6 @@
 (ns kotobase.protocols.atproto-test
   (:require [clojure.test :refer [deftest is testing]]
-            [kotobase.protocols.store :as local]
+            [kotobase.local :as local]
             [kotobase.protocols.atproto :as atproto]
             [kotobase.protocols.blocks :as blocks]
             [kotobase.protocols.json :as json]))
@@ -8,7 +8,7 @@
 (def did "did:web:tenant.example")
 (def nsid "net.kotobase.doc")
 
-(defn- ctx [] {:store (local/memory-store)})
+(defn- ctx [] {:store (local/local-store)})
 
 (defn- put! [c rkey record]
   (atproto/handle c {:method :post :path "/xrpc/com.atproto.repo.putRecord"

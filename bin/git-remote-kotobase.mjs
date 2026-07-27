@@ -78,13 +78,7 @@ function base32(bytes) {
   let bits = 0; let value = 0; let out = "";
   for (const byte of bytes) {
     value = (value << 8) | byte; bits += 8;
-    while (bits >= 5) {
-      bits -= 5;
-      out += chars[(value >>> bits) & 31];
-      // Retain only unconsumed bits. Without this mask `value` grows across
-      // the SHA-256 input and JS bitwise coercion corrupts the CID.
-      value &= bits === 0 ? 0 : (1 << bits) - 1;
-    }
+    while (bits >= 5) { out += chars[(value >>> (bits - 5)) & 31]; bits -= 5; }
   }
   if (bits > 0) out += chars[(value << (5 - bits)) & 31];
   return out;
@@ -93,20 +87,15 @@ function kotobaseGraph() {
   const digest = createHash("sha256").update(`kotobase/db/${did}/git`).digest();
   return `b${base32(Buffer.concat([Buffer.from([0x01, 0x71, 0x12, 0x20]), digest]))}`;
 }
-function mintCacao(opCapabilities = [], graphScope = did) {
+function mintCacao() {
   const iat = new Date(); const exp = new Date(iat.getTime() + 3600000);
-  const iso = (value) => value.toISOString().replace(/\.\d{3}Z$/, "Z");
-  const payload = { iss: did, aud: "did:web:kotobase.net", iat: iat.toISOString(), nonce: `manimani-cdci-${randomUUID()}`,
-    domain: "kotobase.net", version: "1",
-    resources: ["kotoba://can/kotobase:pin", ...opCapabilities.map((cap) => `kotoba://can/${cap}`),
-      `kotoba://graph/${did}`, ...(graphScope === did ? [] : [`kotoba://graph/${graphScope}`])], exp: iso(exp) };
-  payload.iat = iso(iat);
+  const payload = { iss: did, aud: "did:web:kotobase.net", iat: iat.toISOString(), nonce: `git-kotobase-${randomUUID()}`,
+    domain: "kotobase.net", version: "1", resources: ["kotoba://can/kotobase:pin"], exp: exp.toISOString() };
   const address = did.split(":").at(-1);
   const message = [`${payload.domain} wants you to sign in with your Ethereum account:`, address, "",
     `URI: ${payload.aud}`, `Version: ${payload.version}`, "Chain ID: 1", `Nonce: ${payload.nonce}`,
     `Issued At: ${payload.iat}`, `Expiration Time: ${payload.exp}`, "Resources:", ...payload.resources.map((r) => `- ${r}`)].join("\n");
-  const wire = { h: { t: "caip122" }, p: payload,
-    s: { t: "EdDSA", s: b64url(sign(null, Buffer.from(message), privateKey)) } };
+  const wire = { p: payload, s: { t: "EdDSA", s: b64url(sign(null, Buffer.from(message), privateKey)) } };
   return cbor(wire).toString("base64");
 }
 function mintDelegationCacao(audience, resource) {
@@ -151,7 +140,7 @@ async function signedPut(path, body = Buffer.alloc(0), sigref = null, projection
     headers["x-kotobase-commit-cid"] = projection.commitCid;
     headers["x-kotobase-cacao"] = projection.cacao;
   }
-  return fetchBounded(url, { method: "PUT", body, headers });
+  return fetch(url, { method: "PUT", body, headers });
 }
 let quorumConfigured = false;
 async function configureQuorum() {
@@ -166,14 +155,14 @@ async function configureQuorum() {
   quorumConfigured = true;
 }
 async function remoteRefs() {
-  const response = await fetchBounded(`${base}/${repo}/info/refs`);
+  const response = await fetch(`${base}/${repo}/info/refs`);
   if (response.status === 404) return new Map();
   if (!response.ok) throw new Error(`list failed: HTTP ${response.status}`);
   return new Map((await response.text()).trim().split("\n").filter(Boolean).map((line) => line.split("\t").reverse()));
 }
 async function refMetadata(ref) {
   const params = new URLSearchParams({ repo, ref });
-  const response = await fetchBounded(`${base}/xrpc/kotobase.git.ref.get?${params}`);
+  const response = await fetch(`${base}/xrpc/kotobase.git.ref.get?${params}`);
   if (response.status === 404) return null;
   if (!response.ok) throw new Error(`ref metadata failed: HTTP ${response.status}`);
   return response.json();
@@ -201,10 +190,10 @@ async function projectRef(ref, sha, sigref, expectedParent) {
     `:db/add [:git.ref/id ${ednString(id)}] :git.ref/sigref ${ednString(JSON.stringify(sigref))}`,
     `:db/add [:git.ref/id ${ednString(id)}] :git.ref/updated-at ${ednString(new Date().toISOString())}`]
     .map((x) => `[${x}]`);
-  const cacao = mintCacao(["datom:transact", "tx:create"], graph);
+  const cacao = mintCacao();
   const body = { graph, db_name: "git", tx_edn: `[${[...schema, ...entity].join(" ")}]`, cacao_b64: cacao, tenant_did: did };
   if (expectedParent) body.expected_parent = expectedParent;
-  const response = await fetchBounded(`${process.env.KOTOBASE_URL || "https://kotobase.net"}/xrpc/ai.gftd.apps.kotobase.datomic.transact`, {
+  const response = await fetch(`${process.env.KOTOBASE_URL || "https://kotobase.net"}/xrpc/ai.gftd.apps.kotobase.datomic.transact`, {
     method: "POST", headers: { "content-type": "application/json", "accept": "application/json", authorization: `CACAO ${cacao}`, "x-kotoba-did": did },
     body: JSON.stringify(body),
   });
@@ -214,19 +203,14 @@ async function projectRef(ref, sha, sigref, expectedParent) {
   const commitCid = result.commit_cid || result.commit;
   if (!commitCid) throw new Error(`Kotobase transact returned no commit CID: ${responseText}`);
   if (result.graph !== graph) throw new Error(`Kotobase graph mismatch: expected ${graph}, received ${result.graph}`);
-  // CACAO nonces are single-use. A read-back is a second authorized request,
-  // not a replay of the transact capability.
-  const readCacao = mintCacao(["datom:read"], graph);
-  const readback = await fetchBounded(`${process.env.KOTOBASE_URL || "https://kotobase.net"}/xrpc/ai.gftd.apps.kotobase.datomic.datoms`, {
-    method: "POST", headers: { "content-type": "application/json", "accept": "application/json", authorization: `CACAO ${readCacao}`, "x-kotoba-did": did },
-    body: JSON.stringify({ graph, index: ":avet", components_edn: [":git.ref/sigref"], cacao_b64: readCacao }),
+  const readback = await fetch(`${process.env.KOTOBASE_URL || "https://kotobase.net"}/xrpc/ai.gftd.apps.kotobase.datomic.datoms`, {
+    method: "POST", headers: { "content-type": "application/json", "accept": "application/json", authorization: `CACAO ${cacao}`, "x-kotoba-did": did },
+    body: JSON.stringify({ graph, index: ":avet", components_edn: [":git.ref/sigref"], cacao_b64: cacao }),
   });
   const readbackText = await readback.text();
   if (!readback.ok || !readbackText.includes(sha) || !readbackText.includes(sigref.sig))
     throw new Error(`Kotobase projection readback failed: HTTP ${readback.status} ${readbackText}`);
-  // The Git worker performs its own read-back. Give it a third, unused nonce;
-  // neither the transact nor this client's read CACAO may be replayed.
-  return { graph, commitCid, cacao: mintCacao(["datom:read"], graph) };
+  return { graph, commitCid, cacao };
 }
 function objectRaw(sha) {
   const type = git("cat-file", "-t", sha);
@@ -241,13 +225,7 @@ async function push(spec) {
   const refs = await remoteRefs();
   const old = refs.get(ref) || "";
   const priorMetadata = await refMetadata(ref);
-  // The remote already owns every object reachable from `old`; retransmitting
-  // the full repository on every push turns an append-only operations repo
-  // into an O(history) request storm. Send only the fast-forward delta.
-  const objectLines = old
-    ? git("rev-list", "--objects", `${old}..${sha}`)
-    : git("rev-list", "--objects", sha);
-  const objectIds = objectLines.split("\n").filter(Boolean).map((line) => line.split(" ")[0]);
+  const objectIds = git("rev-list", "--objects", sha).split("\n").filter(Boolean).map((line) => line.split(" ")[0]);
   for (const oid of [...new Set(objectIds)]) {
     const { type, raw, body } = objectRaw(oid);
     const params = new URLSearchParams({ repo, sha: oid });
@@ -288,25 +266,19 @@ async function push(spec) {
     writeFileSync(process.env.KOTOBASE_GIT_RECEIPT_FILE, `${JSON.stringify(receipt, null, 2)}\n`, { mode: 0o600 });
 }
 
-async function main() {
-  const rl = createInterface({ input: process.stdin, crlfDelay: Infinity });
-  for await (const line of rl) {
-    if (line === "capabilities") { process.stdout.write("push\n\n"); continue; }
-    if (line === "list" || line === "list for-push") {
-      for (const [ref, sha] of await remoteRefs()) process.stdout.write(`${sha} ${ref}\n`);
-      process.stdout.write("\n"); continue;
-    }
-    if (line.startsWith("push ")) {
-      const spec = line.slice(5);
-      try { await push(spec); process.stdout.write(`ok ${spec.split(":")[1]}\n`); }
-      catch (error) { process.stdout.write(`error ${spec.split(":")[1]} ${String(error.message).replace(/[\r\n]+/g, " ")}\n`); }
-      continue;
-    }
-    if (line === "") { process.stdout.write("\n"); continue; }
-    throw new Error(`unsupported remote-helper command from ${remoteName}: ${line}`);
+const rl = createInterface({ input: process.stdin, crlfDelay: Infinity });
+for await (const line of rl) {
+  if (line === "capabilities") { process.stdout.write("push\n\n"); continue; }
+  if (line === "list" || line === "list for-push") {
+    for (const [ref, sha] of await remoteRefs()) process.stdout.write(`${sha} ${ref}\n`);
+    process.stdout.write("\n"); continue;
   }
+  if (line.startsWith("push ")) {
+    const spec = line.slice(5);
+    try { await push(spec); process.stdout.write(`ok ${spec.split(":")[1]}\n`); }
+    catch (error) { process.stdout.write(`error ${spec.split(":")[1]} ${String(error.message).replace(/[\r\n]+/g, " ")}\n`); }
+    continue;
+  }
+  if (line === "") { process.stdout.write("\n"); continue; }
+  throw new Error(`unsupported remote-helper command from ${remoteName}: ${line}`);
 }
-
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) await main();
-
-export { did, kotobaseGraph, mintCacao };

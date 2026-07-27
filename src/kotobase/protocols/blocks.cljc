@@ -1,7 +1,7 @@
 (ns kotobase.protocols.blocks
   "The shared content-addressed block space every surface reads from.
 
-  One legacy projection collection, `:kotobase.protocols/blocks`, keyed by CID
+  One IStore collection, `:kotobase.protocols/blocks`, keyed by CID
   string, holding {:bytes <string> :content-type <string>}. The IPFS
   gateway serves it, AT-Protocol sync.getBlob serves it, and S3 object
   bodies may be promoted into it later — one block space, four
@@ -11,22 +11,26 @@
   (computed upstream by kotobase-client / kotoba multiformats). This
   library never mints CIDs itself — see kotobase.protocols.hash for
   why its fingerprints are not CIDs."
-  (:require [kotobase.protocols.store :as st]))
+  (:require [kotobase.store :as st]))
 
 (def coll :kotobase.protocols/blocks)
 
 (defn put-block!
   "Store `bytes` under caller-computed `cid`. Idempotent (content-addressed:
-  same cid ⇒ same bytes). Returns the block map."
-  [store cid {:keys [bytes content-type] :as block}]
+  same cid ⇒ same bytes). `:encoding \"base64\"` marks bytes that are a
+  base64 transport encoding of binary content — surfaces serve those
+  with :body-encoding :base64 so the deploy shell decodes them back to
+  raw bytes. Returns the block map."
+  [store cid {:keys [bytes content-type encoding] :as block}]
   {:pre [(string? cid) (string? bytes)]}
-  (st/put store coll cid
-           {:bytes bytes
-            :content-type (or content-type "application/octet-stream")})
-  (st/append store :kotobase.protocols/audit
+  (st/-put store coll cid
+           (cond-> {:bytes bytes
+                    :content-type (or content-type "application/octet-stream")}
+             encoding (assoc :encoding encoding)))
+  (st/-append store :kotobase.protocols/audit
               {:surface :blocks :op :put :cid cid :size (count bytes)})
   block)
 
-(defn get-block [store cid] (st/get store coll cid))
+(defn get-block [store cid] (st/-get store coll cid))
 
-(defn list-cids [store] (st/list-keys store coll))
+(defn list-cids [store] (st/-list store coll))

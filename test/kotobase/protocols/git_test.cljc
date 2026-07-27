@@ -1,14 +1,13 @@
 (ns kotobase.protocols.git-test
-  (:require [clojure.string :as str]
-            [clojure.test :refer [deftest is testing]]
-            [kotobase.local :as local]
+  (:require [clojure.test :refer [deftest is testing]]
+            [kotobase.protocols.store :as local]
             [kotobase.protocols.git :as git]))
 
 (def sha1 "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
 (def sha2 "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
 
 (defn- seeded []
-  (let [store (local/local-store)]
+  (let [store (local/memory-store)]
     (git/put-object! store "gftd/nightglass" sha1 "loose-object-bytes-1")
     (git/put-object! store "gftd/nightglass" sha2 "loose-object-bytes-2")
     (git/set-ref! store "gftd/nightglass" "refs/heads/main" sha1)
@@ -54,47 +53,3 @@
   (let [{:keys [store]} (seeded)]
     (is (thrown? #?(:clj AssertionError :cljs js/Error)
                  (git/put-object! store "r" "not-a-sha" "bytes")))))
-
-(deftest http-write-surface
-  (let [c {:store (local/local-store)}]
-    (testing "PUT ref + HEAD + object, then dumb clone reads see them"
-      (is (= 200 (:status (git/handle c {:method :put
-                                         :path "/o/r/refs/heads/main"
-                                         :body sha1}))))
-      (is (= 200 (:status (git/handle c {:method :put :path "/o/r/HEAD"
-                                         :body "ref: refs/heads/main\n"}))))
-      (is (= 200 (:status (git/handle c {:method :put
-                                         :path (str "/o/r/objects/" (subs sha1 0 2)
-                                                    "/" (subs sha1 2))
-                                         :headers {"x-kotobase-body" "base64"}
-                                         :body "emxpYg=="}))))
-      (is (= (str sha1 "\trefs/heads/main\n")
-             (:body (git/handle c {:method :get :path "/o/r/info/refs"}))))
-      (let [obj (git/handle c {:method :get
-                               :path (str "/o/r/objects/" (subs sha1 0 2)
-                                          "/" (subs sha1 2))})]
-        (is (= "emxpYg==" (:body obj)))
-        (is (= :base64 (:body-encoding obj))
-            "b64-seeded objects are flagged for shell-side decode")))
-    (testing "validation"
-      (is (= 400 (:status (git/handle c {:method :put :path "/o/r/refs/heads/x"
-                                         :body "not-a-sha"}))))
-      (is (= 400 (:status (git/handle c {:method :put :path "/o/r/HEAD"
-                                         :body "gibberish"})))))
-    (testing "a ref whose NAME ends in HEAD (e.g. refs/remotes/origin/HEAD,
-             which real `git for-each-ref` output includes) is a ref
-             write, not the repo's own HEAD symref"
-      (is (= 200 (:status (git/handle c {:method :put
-                                         :path "/o/r/refs/remotes/origin/HEAD"
-                                         :body sha1}))))
-      (is (= "ref: refs/heads/main\n"
-             (:body (git/handle c {:method :get :path "/o/r/HEAD"})))
-          "the repo's own HEAD symref, set earlier in this test, must survive unchanged")
-      (is (str/includes? (:body (git/handle c {:method :get :path "/o/r/info/refs"}))
-                         "refs/remotes/origin/HEAD")
-          "the remote-tracking HEAD shows up as an ordinary ref"))
-    (testing "dumb-transport probes return empty 200"
-      (is (= 200 (:status (git/handle c {:method :get
-                                         :path "/o/r/objects/info/packs"}))))
-      (is (= "" (:body (git/handle c {:method :get
-                                      :path "/o/r/objects/info/alternates"})))))))

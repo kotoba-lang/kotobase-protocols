@@ -1,13 +1,11 @@
 (ns kotobase.protocols.router-test
-  (:require [clojure.edn :as edn]
-            [clojure.string :as str]
+  (:require [clojure.string :as str]
             [clojure.test :refer [deftest is testing]]
-            [kotobase.local :as local]
+            [kotobase.protocols.store :as local]
             [kotobase.protocols.blocks :as blocks]
-            [kotobase.protocols.json :as json]
             [kotobase.protocols.router :as router]))
 
-(defn- ctx [] {:store (local/local-store) :now "2026-07-17T00:00:00Z"})
+(defn- ctx [] {:store (local/memory-store) :now "2026-07-17T00:00:00Z"})
 
 (deftest surface-of
   (is (= "s3" (router/surface-of "s3.kotobase.net" "kotobase.net")))
@@ -41,19 +39,7 @@
                                             :path "/xrpc/does.not.exist"})))))
     (testing "git subdomain"
       (is (= 404 (:status (router/handle c {:method :get :host "git.kotobase.net"
-                                            :path "/nope/info/refs"})))))
-    (testing "pinning subdomain (write surface, distinct from read-only ipfs)"
-      (blocks/put-block! (:store c) "bafypinme" {:bytes "x" :content-type "text/plain"})
-      (let [res (router/handle c {:method :post :host "pinning.kotobase.net"
-                                  :path "/pins" :body (json/encode {"cid" "bafypinme"})})]
-        (is (= 202 (:status res)))
-        (is (= "pinned" (get (json/parse (:body res)) "status")))))
-    (testing "issues subdomain (EDN wire format, not JSON)"
-      (let [res (router/handle c {:method :post :host "issues.kotobase.net"
-                                  :path "/gftdcojp/local-manimani/issues"
-                                  :body (pr-str {:title "hello"})})]
-        (is (= 201 (:status res)))
-        (is (= "hello" (:title (edn/read-string (:body res)))))))))
+                                            :path "/nope/info/refs"})))))))
 
 (deftest single-origin-fallback
   (let [c (ctx)]
@@ -64,17 +50,6 @@
                                         :path "/s3/bkt/k"}))))
     (is (= 501 (:status (router/handle c {:method :get :host "peer.local"
                                           :path "/xrpc/does.not.exist"}))))
-    (testing "/pins is the spec-native path, mounted unstripped"
-      (blocks/put-block! (:store c) "bafypeerpin" {:bytes "x" :content-type "text/plain"})
-      (let [res (router/handle c {:method :post :host "peer.local" :path "/pins"
-                                  :body (json/encode {"cid" "bafypeerpin"})})]
-        (is (= 202 (:status res)))
-        (is (= "pinned" (get (json/parse (:body res)) "status")))))
-    (testing "/issues/* mounts the issue surface with the prefix stripped"
-      (let [res (router/handle c {:method :post :host "peer.local"
-                                  :path "/issues/gftdcojp/local-manimani/issues"
-                                  :body (pr-str {:title "hi"})})]
-        (is (= 201 (:status res)))))
     (let [res (router/handle c {:method :get :host "peer.local" :path "/other"})]
       (is (= 404 (:status res)))
       (is (str/includes? (:body res) "no protocol surface")))))

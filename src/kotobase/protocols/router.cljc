@@ -32,6 +32,15 @@
   write-capable auth (the Pinning API's bearer token) without
   special-casing paths under a nominally read-only host.
 
+  A deploy shell may add surfaces of its own through `ctx :surfaces`
+  (label -> handler), and `:path-surfaces` (path prefix -> label) for
+  the single-origin fallback. That is how the query-protocol surfaces
+  (sparql/cypher/gremlin) reach production without this namespace
+  depending on them: they live in their own repositories, and the
+  shell that already depends on both composes them. Built-in surfaces
+  win over injected ones, so a shell cannot quietly shadow `s3` or
+  `git` with something else.
+
   The apex defaults to \"kotobase.net\" but is injectable — the same
   router serves a self-hosted mesh peer on any domain. This module
   plans routes; actually answering on *.kotobase.net DNS requires the
@@ -67,21 +76,40 @@
 (defn- strip-prefix [req prefix]
   (assoc req :path (subs (:path req) (count prefix))))
 
+(defn surfaces-for
+  "Every surface this request may reach: the built-ins plus whatever the
+  deploy shell injected. Built-ins are merged LAST — a shell adds surfaces,
+  it does not redefine `s3` or `git` out from under the router."
+  [ctx]
+  (merge (:surfaces ctx) surfaces))
+
 (defn handle
   "Route `req` to its protocol surface. ctx: {:store ... :now ...
-  :apex \"kotobase.net\"}."
+  :apex \"kotobase.net\" :surfaces {label handler} :path-surfaces
+  {prefix label}}."
   [{:keys [apex] :or {apex "kotobase.net"} :as ctx} req]
   (let [path (or (:path req) "")
-        surface (surface-of (:host req) apex)]
-    (if (and (= :get (:method req)) (= "/health" path) (contains? surfaces surface))
+        all (surfaces-for ctx)
+        surface (surface-of (:host req) apex)
+        mounted (some (fn [[prefix label]]
+                        (when (str/starts-with? path prefix) (get all label)))
+                      (:path-surfaces ctx))]
+    (if (and (= :get (:method req)) (= "/health" path) (contains? all surface))
       (http/response 200
                      {"content-type" "application/edn; charset=utf-8"
                       "cache-control" "no-store"}
                      (pr-str {:ok true :service (keyword (str "kotobase.protocols/" surface))
                               :surface (keyword surface) :apex apex}))
-      (if-let [handler (get surfaces surface)]
+      (if-let [handler (get all surface)]
         (handler ctx req)
       (cond
+        ;; Injected single-origin mounts, checked before the built-in
+        ;; prefixes so a shell can mount /sparql or /cypher on the one
+        ;; hostname it owns. The prefix is NOT stripped: these protocols
+        ;; specify their own absolute paths (SPARQL 1.1 Protocol, Neo4j's
+        ;; /db/data/transaction/commit), and stripping would break the
+        ;; handlers' own path checks.
+        mounted (mounted ctx req)
         (str/starts-with? path "/ipfs/") (ipfs/handle ctx req)
         (str/starts-with? path "/ipns/") (ipfs/handle ctx req)
         (str/starts-with? path "/xrpc/") (atproto/handle ctx req)

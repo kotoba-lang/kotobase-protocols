@@ -2,12 +2,12 @@
   (:require [clojure.edn :as edn]
             [clojure.string :as str]
             [clojure.test :refer [deftest is testing]]
-            [kotobase.local :as local]
+            [kotobase.protocols.store :as local]
             [kotobase.protocols.blocks :as blocks]
             [kotobase.protocols.json :as json]
             [kotobase.protocols.router :as router]))
 
-(defn- ctx [] {:store (local/local-store) :now "2026-07-17T00:00:00Z"})
+(defn- ctx [] {:store (local/memory-store) :now "2026-07-17T00:00:00Z"})
 
 (deftest surface-of
   (is (= "s3" (router/surface-of "s3.kotobase.net" "kotobase.net")))

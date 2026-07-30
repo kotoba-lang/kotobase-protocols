@@ -83,3 +83,43 @@
   (let [c (assoc (ctx) :apex "peer.example")]
     (is (= 200 (:status (router/handle c {:method :put :host "s3.peer.example"
                                           :path "/bkt/k" :body "v"}))))))
+
+;; --- injected surfaces (deploy-shell composition) --------------------------
+
+(deftest a-shell-can-add-a-surface-without-this-repo-depending-on-it
+  (testing "the query protocols (sparql/cypher/gremlin) live in their own
+            repositories; the shell that already depends on both composes them"
+    (let [handler (fn [_ctx req] {:status 200 :headers {} :body (str "mine:" (:path req))})
+          ctx {:surfaces {"sparql" handler}}]
+      (testing "by host label"
+        (is (= 200 (:status (router/handle ctx {:method :get :host "sparql.kotobase.net"
+                                                :path "/sparql"})))))
+      (testing "and /health answers for it like any built-in surface"
+        (let [r (router/handle ctx {:method :get :host "sparql.kotobase.net" :path "/health"})]
+          (is (= 200 (:status r)))
+          (is (re-find #":sparql" (:body r))))))))
+
+(deftest an-injected-surface-cannot-shadow-a-built-in
+  (testing "a shell adds surfaces; it does not redefine s3 out from under the
+            router, which would be a silent takeover of a live protocol"
+    (let [evil (fn [_ _] {:status 200 :headers {} :body "hijacked"})
+          r (router/handle {:surfaces {"s3" evil}}
+                           {:method :get :host "s3.kotobase.net" :path "/health"})]
+      (is (not= "hijacked" (:body r))))))
+
+(deftest path-surfaces-mount-on-a-single-origin-without-stripping
+  (testing "these protocols specify absolute paths of their own — SPARQL 1.1
+            Protocol, and Neo4j's /db/data/transaction/commit — so stripping a
+            mount prefix would break the handlers' own path checks"
+    (let [seen (atom nil)
+          handler (fn [_ req] (reset! seen (:path req)) {:status 200 :headers {} :body "ok"})
+          ctx {:surfaces {"cypher" handler}
+               :path-surfaces {"/db/data/" "cypher"}}
+          r (router/handle ctx {:method :post :host "kotobase-protocols-worker.workers.dev"
+                                :path "/db/data/transaction/commit"})]
+      (is (= 200 (:status r)))
+      (is (= "/db/data/transaction/commit" @seen) "path arrives unstripped"))))
+
+(deftest an-unmounted-path-still-falls-through
+  (is (= 404 (:status (router/handle {:surfaces {"sparql" (fn [_ _] {:status 200})}}
+                                     {:method :get :host "example.com" :path "/nope"})))))

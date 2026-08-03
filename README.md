@@ -77,6 +77,55 @@ it proves routing and handler availability, not backing-store durability.
 ;; => {:status 200 … :body "hello"}
 ```
 
+## The block plane: bytes do not belong on the datom plane (ADR-2608039970)
+
+`ctx` may carry a **block port**, and when it does, block bytes go there
+instead of into the `IStore` document collection:
+
+```clojure
+(def ctx {:store  store            ; documents, metadata, audit — unchanged
+          :blocks {:get  (fn [cid] block-or-nil)
+                   :put! (fn [cid block] _)
+                   :list (fn [] [cid ...])}
+          :cid-of (fn [block] "bafkrei…")})   ; optional verification
+```
+
+**Why.** A block stored as a document is a document *value*, and in
+`kotobase-protocols-worker` a document value is encoded as a datom
+(`"doc/val" (pr-str v)`) on the prolly-tree chain — so a 5 MB object body
+becomes datoms. The measured cost of that route is the **4 MiB ceiling on
+`PUT /ipfs/:cid`** (superproject ADR-2607175000, ADR-2608012600 D4).
+
+**Without `:blocks`, behaviour is exactly what it was** — the document
+collection. That is deliberate: `kotobase-protocols-worker` is live, and a
+port it has not adopted yet must not change what it does. `(blocks/put-block!
+store cid block)` with a bare `IStore` still works and is still tested.
+
+This port is deliberately **not** `kotobase.storage/IBlockStore`: these
+handlers are synchronous by contract and that protocol is batch and
+Promise-returning on cljs — the same wall the worker's `kotobase-store`
+namespace documents when it explains why it hydrates *before* the router
+runs. A shell needing async reads prefetches, as it already does for
+documents.
+
+### `:cid-of` — verification is the plane's job
+
+When present, every read and every write checks the block against the CID it
+is keyed by, and a mismatch **throws** `:kotobase.protocols/cid-mismatch`.
+This closes the v0.1 "trusts the caller-supplied CID" gap.
+
+- It takes the **whole block**, not `:bytes` — only the shell knows what the
+  CID was computed over (`POST /ipfs` hashes the *raw* body and stores
+  `:encoding "base64"`). The shell owns the encoding convention; the library
+  owns the invariant.
+- A mismatch **throws** rather than reading as absent, for the reason
+  `kotobase.storage.verify` gives: omitting a tampered block turns a corrupt
+  store into a *shorter answer* — bytes quietly gone, looking exactly like a
+  cache miss. A miss is still `nil`; absence and corruption are different
+  answers.
+- **Without `:cid-of` nothing is verified.** That is what this library did
+  unconditionally before, and it is now a question a deployment can be asked.
+
 ## Scope guards (read before extending)
 
 - **`ipfs.kotobase.net` (the public route) is owned by

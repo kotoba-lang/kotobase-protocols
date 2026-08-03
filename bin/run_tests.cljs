@@ -9,6 +9,7 @@
 (ns run-tests
   (:require [cljs.test :as t]
             [kotobase.protocols.atproto-test]
+            [kotobase.protocols.blocks-test]
             [kotobase.protocols.cid-test]
             [kotobase.protocols.git-test]
             [kotobase.protocols.ipfs-pinning-test]
@@ -23,6 +24,7 @@
     (set! (.-exitCode js/process) 1)))
 
 (t/run-tests 'kotobase.protocols.json-test
+             'kotobase.protocols.blocks-test
              'kotobase.protocols.cid-test
              'kotobase.protocols.s3-test
              'kotobase.protocols.ipfs-test

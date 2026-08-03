@@ -109,12 +109,13 @@
                                   "v0.1 has no pinning daemon to fetch it "
                                   "from origins")})))
 
-(defn- create-pin [store now body]
-  (let [{:strs [cid name origins]} body]
+(defn- create-pin [ctx now body]
+  (let [store (:store ctx)
+        {:strs [cid name origins]} body]
     (if-not (string? cid)
       (pin-error 400 "cid is required")
       (let [requestid (gen-requestid store cid now)
-            status (if (blocks/get-block store cid) "pinned" "failed")
+            status (if (blocks/get-block ctx cid) "pinned" "failed")
             doc {:pin/cid cid
                  :pin/name name
                  :pin/status status
@@ -158,8 +159,10 @@
 
 (defn handle
   "IPFS Pinning Service API handler. `ctx` is {:store IStore, :now optional
-  ISO string}. Dispatches POST/GET /pins and GET/DELETE /pins/{requestid}."
-  [{:keys [store now]} req]
+  ISO string, and optionally the `:blocks`/`:cid-of` block plane
+  kotobase.protocols.blocks documents}. Dispatches POST/GET /pins and
+  GET/DELETE /pins/{requestid}."
+  [{:keys [store now] :as ctx} req]
   (let [segs (http/segments (:path req))
         method (:method req)
         n (count segs)]
@@ -171,7 +174,7 @@
       (let [body (parse-body req)]
         (if (nil? body)
           (pin-error 400 "malformed JSON body")
-          (create-pin store now body)))
+          (create-pin ctx now body)))
 
       (and (= 1 n) (= :get method))
       (list-pins store req)

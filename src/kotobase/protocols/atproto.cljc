@@ -86,18 +86,18 @@
           (audit! store :delete-record repo collection rkey)
           (json-response 200 {})))))
 
-(defn- get-blob [store req]
+(defn- get-blob [ctx req]
   (let [did (http/query-param req "did")
         cid (http/query-param req "cid")]
     (if-not (and did cid)
       (xrpc-error 400 "InvalidRequest" "did and cid are required")
-      (if-let [b (blocks/get-block store cid)]
+      (if-let [b (blocks/get-block ctx cid)]
         (http/response 200 {"content-type" (:content-type b)} (:bytes b))
         (xrpc-error 400 "BlobNotFound" (str "blob not found: " cid))))))
 
 (defn handle
   "XRPC handler. Dispatches /xrpc/{nsid}; unknown NSIDs → 501."
-  [{:keys [store]} req]
+  [{:keys [store] :as ctx} req]
   (let [segs (http/segments (:path req))]
     (if-not (= "xrpc" (first segs))
       (http/not-found)
@@ -114,6 +114,6 @@
           "com.atproto.repo.deleteRecord"
           (if post? (delete-record store req) (http/method-not-allowed))
           "com.atproto.sync.getBlob"
-          (if get? (get-blob store req) (http/method-not-allowed))
+          (if get? (get-blob ctx req) (http/method-not-allowed))
           (xrpc-error 501 "MethodNotImplemented"
                       (str "unsupported nsid: " (or nsid ""))))))))

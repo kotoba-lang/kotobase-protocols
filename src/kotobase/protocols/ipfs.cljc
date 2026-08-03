@@ -35,8 +35,10 @@
   (if (contains? content-type-allowlist ct) ct "application/octet-stream"))
 
 (defn handle
-  "IPFS gateway handler. Serves GET/HEAD /ipfs/{cid} from ctx :store."
-  [{:keys [store]} req]
+  "IPFS gateway handler. Serves GET/HEAD /ipfs/{cid} from ctx's block
+  plane -- the `:blocks` port when the shell supplies one, the `:store`
+  document collection otherwise (kotobase.protocols.blocks)."
+  [ctx req]
   (let [segs (http/segments (:path req))]
     (cond
       (not (#{:get :head} (:method req)))
@@ -44,7 +46,7 @@
 
       (and (= "ipfs" (first segs)) (= 2 (count segs)))
       (let [cid (second segs)]
-        (if-let [b (blocks/get-block store cid)]
+        (if-let [b (blocks/get-block ctx cid)]
           (cond-> (http/response 200
                                  {"content-type" (sanitize-content-type (:content-type b))
                                   "etag" (str "\"" cid "\"")

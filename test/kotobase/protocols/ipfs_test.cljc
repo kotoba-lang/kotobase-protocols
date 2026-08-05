@@ -1,12 +1,12 @@
 (ns kotobase.protocols.ipfs-test
   (:require [clojure.test :refer [deftest is testing]]
-            [kotobase.local :as local]
+            [kotobase.protocols.store :as local]
             [kotobase.protocols.blocks :as blocks]
             [kotobase.protocols.ipfs :as ipfs]))
 
 (def cid "bafyreigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi")
 
-(defn- ctx [] {:store (local/local-store)})
+(defn- ctx [] {:store (local/memory-store)})
 
 (deftest gateway-serves-blocks
   (let [{:keys [store] :as c} (ctx)]

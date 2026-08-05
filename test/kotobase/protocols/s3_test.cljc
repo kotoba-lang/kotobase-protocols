@@ -1,11 +1,11 @@
 (ns kotobase.protocols.s3-test
   (:require [clojure.string :as str]
             [clojure.test :refer [deftest is testing]]
-            [kotobase.local :as local]
+            [kotobase.protocols.store :as local]
             [kotobase.protocols.s3 :as s3]
-            [kotobase.store :as st]))
+            [kotobase.protocols.store :as st]))
 
-(defn- ctx [] {:store (local/local-store) :now "2026-07-17T00:00:00Z"})
+(defn- ctx [] {:store (local/memory-store) :now "2026-07-17T00:00:00Z"})
 
 (deftest put-get-head-delete-object
   (let [c (ctx)
@@ -49,7 +49,7 @@
   (let [{:keys [store] :as c} (ctx)]
     (s3/handle c {:method :put :path "/bkt/k" :body "v"})
     (s3/handle c {:method :delete :path "/bkt/k"})
-    (let [events (st/-read store :kotobase.protocols/audit 0)]
+    (let [events (st/read-events store :kotobase.protocols/audit 0)]
       (is (= [:put-object :delete-object] (map :op events)))
       (is (every? #(= :s3 (:surface %)) events)))))
 

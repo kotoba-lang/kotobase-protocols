@@ -4,7 +4,7 @@
 ;;   nbb --classpath "src:test:<kotobase>/src" bin/run_tests.cljs
 ;;
 ;; where <kotobase> is a checkout of kotoba-lang/kotobase (provides
-;; kotobase.store / kotobase.local). CI pins it to the same SHA as
+;; kotobase.protocols.store). CI uses the source-local memory host, so
 ;; deps.edn.
 (ns run-tests
   (:require [cljs.test :as t]

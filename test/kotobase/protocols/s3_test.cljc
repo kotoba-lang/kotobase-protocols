@@ -58,3 +58,35 @@
     (s3/handle c {:method :put :path "/bkt/a&b<c" :body "x"})
     (let [res (s3/handle c {:method :get :path "/bkt" :query {}})]
       (is (str/includes? (:body res) "<Key>a&amp;b&lt;c</Key>")))))
+
+(deftest records-whose-bytes-live-off-this-plane
+  (testing "a deploy shell may keep the body on a block plane and store
+            only a metadata record here (superproject ADR-2608039970);
+            nothing in this namespace produces that shape, so it is
+            written directly"
+    (let [c (ctx)]
+      (st/-put (:store c) (s3/objects-coll "media") "big.bin"
+               {:cid "bafkreiexample" :size 1048576 :stored 4096
+                :content-type "application/octet-stream" :etag "abc"})
+      (testing "the listing reports the ORIGINAL size, not 0 and not the stored size"
+        (let [xml (:body (s3/handle c {:method :get :path "/media"
+                                       :query {"list-type" "2"}}))]
+          (is (str/includes? xml "<Size>1048576</Size>"))))
+      (testing "HEAD is answerable from metadata alone"
+        (let [head (s3/handle c {:method :head :path "/media/big.bin"})]
+          (is (= 200 (:status head)))
+          (is (= "1048576" (get-in head [:headers "content-length"])))))
+      (testing "GET refuses rather than returning an empty body with a real length"
+        (let [got (s3/handle c {:method :get :path "/media/big.bin"})]
+          (is (= 501 (:status got)))
+          (is (str/includes? (:body got) "NotImplemented")))))))
+
+(deftest inline-records-are-unchanged
+  (testing "the shape this namespace has always written keeps working"
+    (let [c (ctx)]
+      (s3/handle c {:method :put :path "/media/a.txt"
+                    :headers {"content-type" "text/plain"} :body "hello"})
+      (let [xml (:body (s3/handle c {:method :get :path "/media"
+                                     :query {"list-type" "2"}}))]
+        (is (str/includes? xml "<Size>5</Size>")))
+      (is (= "hello" (:body (s3/handle c {:method :get :path "/media/a.txt"})))))))

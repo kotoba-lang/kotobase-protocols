@@ -27,6 +27,24 @@
 
 (defn objects-coll [bucket] [:kotobase.s3/objects bucket])
 
+(defn- object-size
+  "Byte length of an object, whichever era its record is from.
+
+  An object value used to be REQUIRED to carry its body inline as
+  `:bytes`. A deploy shell may now keep the bytes on a block plane and
+  store `{:cid … :size …}` here instead — which is what
+  s3.kotobase.net does, because bodies do not belong on the datom
+  plane (superproject ADR-2608039970) and because the inline path was
+  binary-unsafe.
+
+  `:size` is therefore preferred and `(count (:bytes o))` is the
+  fallback, never the other way round: for a record without inline
+  bytes the fallback yields 0, and a listing that reports every object
+  as empty is wrong in the one way nobody notices — it parses, it
+  validates, and every size is a lie."
+  [o]
+  (or (:size o) (count (:bytes o)) 0))
+
 (defn- audit! [store op bucket k]
   (st/-append store :kotobase.protocols/audit
               {:surface :s3 :op op :bucket bucket :key k}))
@@ -60,14 +78,14 @@
                    (str "<Contents>"
                         "<Key>" (http/xml-escape k) "</Key>"
                         "<ETag>&quot;" (:etag o) "&quot;</ETag>"
-                        "<Size>" (count (:bytes o)) "</Size>"
+                        "<Size>" (object-size o) "</Size>"
                         "</Contents>")))
           "</ListBucketResult>"))))
 
 (defn- object-headers [o]
   (cond-> {"content-type" (:content-type o)
            "etag" (str "\"" (:etag o) "\"")
-           "content-length" (str (count (:bytes o)))}
+           "content-length" (str (object-size o))}
     (:last-modified o) (assoc "last-modified" (:last-modified o))))
 
 (defn handle
@@ -100,8 +118,21 @@
 
         (:get :head)
         (if-let [o (st/-get store (objects-coll bucket) k)]
-          (http/response 200 (object-headers o)
-                         (when (= :get (:method req)) (:bytes o)))
+          (if (and (= :get (:method req)) (nil? (:bytes o)) (:cid o))
+            ;; A record whose bytes live on a block plane. HEAD is still
+            ;; answerable from metadata alone, but GET is not: this
+            ;; handler has no way to reach the block, and answering 200
+            ;; with the right `content-length` and an empty body is the
+            ;; worst available outcome — every client would read it as a
+            ;; truncated object rather than as a surface that cannot
+            ;; serve it. The deploy shell intercepts GET for these; if
+            ;; one reaches here, the deployment is misconfigured and
+            ;; should say so.
+            (error-xml 501 "NotImplemented"
+                       (str "object bytes are stored off this plane; "
+                            "the deploy shell serves them"))
+            (http/response 200 (object-headers o)
+                           (when (= :get (:method req)) (:bytes o))))
           (error-xml 404 "NoSuchKey" (str "no such key: " k)))
 
         :delete

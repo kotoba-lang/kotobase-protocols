@@ -64,7 +64,18 @@
   /pins/{requestid}` (\"replace\"), `delegates`, per-pin `meta`, and any real
   peering/fetch against `origins`. Authentication (the Pinning API spec's
   bearer token) is the deploy shell's job, same split every other surface in
-  this repo uses (CACAO verification lives at the edge, not in the engine)."
+  this repo uses (CACAO verification lives at the edge, not in the engine).
+
+  Discovery advertise (ADR-2608160300) is the same split. This namespace
+  does not require ipni. Optional `ctx` key `:advertise` is
+  `(fn [event] …)` where `event` is
+  `{:cid :op :requestid :context-id :mutates-cid?}`. `:cid` is the content
+  CID. `:op` is `:advertise` on the first pinned request for that CID and
+  `:remove` when the last pinned request for that CID is deleted. Missing
+  hook is silence, not failure. A thrown hook or `{:ok? false}` is audited
+  and does not change pin status — local block presence is the pin
+  contract; IPNI is discovery. The deploy shell maps this event onto
+  `kotoba.protocol.discover/advertise-live` / `ipni.advertise`."
   (:require [kotobase.protocols.blocks :as blocks]
             [kotobase.protocols.hash :as hash]
             [kotobase.protocols.http :as http]
@@ -92,6 +103,38 @@
 (defn- gen-requestid [store cid now]
   (hash/fingerprint (str cid "|" now "|" (next-seq! store))))
 
+(defn- pinned-request-ids
+  "Live pinned request ids for `cid`. Tombstones (`nil`) and failed
+  requests do not count — they never advertised."
+  [store cid]
+  (->> (st/-list store pins-coll)
+       (keep (fn [id]
+               (when-let [d (st/-get store pins-coll id)]
+                 (when (and (= cid (:pin/cid d))
+                            (= "pinned" (:pin/status d)))
+                   id))))
+       vec))
+
+(defn- fire-advertise
+  "Call injected `:advertise` if present. Never throws. Never rewrites
+  `:cid`. Absence is not a pass dressed as success — it is simply not
+  this library's transport."
+  [ctx event]
+  (let [f (:advertise ctx)]
+    (when (ifn? f)
+      (try
+        (let [ret (f event)]
+          (when (and (map? ret) (false? (:ok? ret)))
+            (audit! (:store ctx) :advertise-rejected
+                    (:requestid event) (:cid event)))
+          ret)
+        (catch #?(:clj Exception :cljs :default) e
+          (audit! (:store ctx) :advertise-error
+                  (:requestid event) (:cid event))
+          {:ok? false
+           :reason :advertise-error
+           :detail #?(:clj (.getMessage e) :cljs (str e))})))))
+
 (defn- pin->json
   "Pin doc → PinStatus JSON map (ipfs.github.io pinning-services-api-spec
   shape). `delegates` is always empty — this library has no peer identity to
@@ -114,7 +157,8 @@
         {:strs [cid name origins]} body]
     (if-not (string? cid)
       (pin-error 400 "cid is required")
-      (let [requestid (gen-requestid store cid now)
+      (let [already (seq (pinned-request-ids store cid))
+            requestid (gen-requestid store cid now)
             status (if (blocks/get-block ctx cid) "pinned" "failed")
             doc {:pin/cid cid
                  :pin/name name
@@ -123,6 +167,12 @@
                  :pin/origins (vec origins)}]
         (st/-put store pins-coll requestid doc)
         (audit! store :create-pin requestid cid)
+        (when (and (= "pinned" status) (not already))
+          (fire-advertise ctx {:cid cid
+                               :op :advertise
+                               :requestid requestid
+                               :context-id requestid
+                               :mutates-cid? false}))
         (json-response 202 (pin->json requestid doc))))))
 
 (defn- get-pin [store requestid]
@@ -146,12 +196,21 @@
     (json-response 200 {"count" (count entries)
                         "results" (mapv (fn [[id d]] (pin->json id d)) entries)})))
 
-(defn- delete-pin [store requestid]
-  (if-let [doc (st/-get store pins-coll requestid)]
-    (do (st/-put store pins-coll requestid nil)
-        (audit! store :delete-pin requestid (:pin/cid doc))
+(defn- delete-pin [ctx requestid]
+  (let [store (:store ctx)]
+    (if-let [doc (st/-get store pins-coll requestid)]
+      (let [cid (:pin/cid doc)]
+        (st/-put store pins-coll requestid nil)
+        (audit! store :delete-pin requestid cid)
+        (when (and (= "pinned" (:pin/status doc))
+                   (empty? (pinned-request-ids store cid)))
+          (fire-advertise ctx {:cid cid
+                               :op :remove
+                               :requestid requestid
+                               :context-id requestid
+                               :mutates-cid? false}))
         (http/response 202 {} nil))
-    (pin-error 404 "pin request not found")))
+      (pin-error 404 "pin request not found"))))
 
 (defn- parse-body [req]
   (try (json/parse (or (:body req) "{}"))
@@ -159,9 +218,9 @@
 
 (defn handle
   "IPFS Pinning Service API handler. `ctx` is {:store IStore, :now optional
-  ISO string, and optionally the `:blocks`/`:cid-of` block plane
-  kotobase.protocols.blocks documents}. Dispatches POST/GET /pins and
-  GET/DELETE /pins/{requestid}."
+  ISO string, optional `:advertise` (fn [event]), and optionally the
+  `:blocks`/`:cid-of` block plane kotobase.protocols.blocks documents}.
+  Dispatches POST/GET /pins and GET/DELETE /pins/{requestid}."
   [{:keys [store now] :as ctx} req]
   (let [segs (http/segments (:path req))
         method (:method req)
@@ -183,7 +242,7 @@
       (get-pin store (second segs))
 
       (and (= 2 n) (= :delete method))
-      (delete-pin store (second segs))
+      (delete-pin ctx (second segs))
 
       (or (= 1 n) (= 2 n))
       (http/method-not-allowed)

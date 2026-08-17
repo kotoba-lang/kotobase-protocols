@@ -111,6 +111,7 @@
         ;; handlers' own path checks.
         mounted (mounted ctx req)
         (str/starts-with? path "/ipfs/") (ipfs/handle ctx req)
+        (str/starts-with? path "/ipni/") (ipfs/handle ctx req)
         (str/starts-with? path "/ipns/") (ipfs/handle ctx req)
         (str/starts-with? path "/xrpc/") (atproto/handle ctx req)
         (str/starts-with? path "/pins")  (ipfs-pinning/handle ctx req)

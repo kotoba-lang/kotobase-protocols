@@ -43,3 +43,39 @@
     (is (= 501 (:status (ipfs/handle c {:method :get :path "/ipns/example.com"}))))
     (is (= 405 (:status (ipfs/handle c {:method :put :path (str "/ipfs/" cid)})))
         "HTTP surface is read-only")))
+
+(def ad-cid "bafyreibadcidforipnipublishertest0000000000000000000001")
+
+(deftest ipni-publisher-serves-advertisement-cid-without-rewriting-it
+  (let [{:keys [store] :as c} (ctx)
+        bytes "{\"schema\":\"ipni.advertisement\"}"]
+    (blocks/put-block! store ad-cid {:bytes bytes :content-type "application/vnd.ipld.dag-json"})
+    (let [res (ipfs/handle c {:method :get :path (str "/ipni/v1/ad/" ad-cid)})]
+      (is (= 200 (:status res)))
+      (is (= bytes (:body res)))
+      (is (= (str "\"" ad-cid "\"") (get-in res [:headers "etag"]))
+          "etag is the advertisement CID, not a content CID")
+      (is (nil? (get-in res [:headers "x-ipfs-path"]))
+          "publisher path is not a retrieval path"))
+    (testing "the same bytes remain at the retrieval path — two URLs, one block"
+      (is (= bytes (:body (ipfs/handle c {:method :get :path (str "/ipfs/" ad-cid)})))))
+    (testing "HEAD is headers only"
+      (let [res (ipfs/handle c {:method :head :path (str "/ipni/v1/ad/" ad-cid)})]
+        (is (= 200 (:status res)))
+        (is (nil? (:body res)))))
+    (testing "missing advertisement is 404, not empty success"
+      (is (= 404 (:status (ipfs/handle c {:method :get :path "/ipni/v1/ad/bafyrei-missing"})))))
+    (testing "publisher writes are not this surface"
+      (is (= 405 (:status (ipfs/handle c {:method :put :path (str "/ipni/v1/ad/" ad-cid)})))))))
+
+(deftest ipni-head-is-404-until-a-cid-is-named
+  (let [{:keys [store] :as c} (ctx)
+        bytes "{\"schema\":\"ipni.signed-head\"}"]
+    (is (= 404 (:status (ipfs/handle c {:method :get :path "/ipni/v1/head"})))
+        "missing head is not an empty 200")
+    (blocks/put-block! store ad-cid {:bytes bytes :content-type "application/json"})
+    (let [res (ipfs/handle (assoc c :ipni-head-cid ad-cid)
+                           {:method :get :path "/ipni/v1/head"})]
+      (is (= 200 (:status res)))
+      (is (= bytes (:body res)))
+      (is (= (str "\"" ad-cid "\"") (get-in res [:headers "etag"]))))))

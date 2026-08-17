@@ -120,3 +120,49 @@
       (is (= 405 (:status (pinning/handle c {:method :put :path "/pins"})))))
     (testing "unrelated path → 404"
       (is (= 404 (:status (pinning/handle c {:method :get :path "/not-pins"})))))))
+
+(deftest advertise-hook-fires-once-per-cid-and-removes-on-last-delete
+  (let [seen (atom [])
+        {:keys [store] :as base} (ctx)
+        c (assoc base :advertise (fn [event] (swap! seen conj event) {:ok? true}))]
+    (blocks/put-block! store cid {:bytes "hello" :content-type "text/plain"})
+    (let [id1 (get (json/parse (:body (create! c {"cid" cid}))) "requestid")
+          id2 (get (json/parse (:body (create! c {"cid" cid}))) "requestid")]
+      (is (= 1 (count @seen)) "second pin of the same CID does not re-announce")
+      (is (= cid (:cid (first @seen))))
+      (is (= :advertise (:op (first @seen))))
+      (is (false? (:mutates-cid? (first @seen))))
+      (is (= id1 (:context-id (first @seen))))
+      (testing "failed pin never advertises"
+        (create! c {"cid" missing-cid})
+        (is (= 1 (count @seen))))
+      (testing "deleting one of two pinned requests is not IsRm"
+        (is (= 202 (:status (pinning/handle c {:method :delete :path (str "/pins/" id1)}))))
+        (is (= 1 (count @seen))))
+      (testing "deleting the last pinned request is :remove of the content CID"
+        (is (= 202 (:status (pinning/handle c {:method :delete :path (str "/pins/" id2)}))))
+        (is (= 2 (count @seen)))
+        (is (= {:cid cid :op :remove :requestid id2 :context-id id2 :mutates-cid? false}
+               (second @seen))))
+      (testing "the block is still there — advertise is discovery, not storage"
+        (is (some? (blocks/get-block store cid)))))))
+
+(deftest missing-advertise-hook-does-not-fail-pin
+  (let [{:keys [store] :as c} (ctx)]
+    (blocks/put-block! store cid {:bytes "hello" :content-type "text/plain"})
+    (let [res (create! c {"cid" cid})]
+      (is (= 202 (:status res)))
+      (is (= "pinned" (get (json/parse (:body res)) "status"))))))
+
+(deftest advertise-hook-failure-does-not-un-pin
+  (let [{:keys [store] :as base} (ctx)
+        c (assoc base :advertise (fn [_] (throw (ex-info "indexer down" {}))))]
+    (blocks/put-block! store cid {:bytes "hello" :content-type "text/plain"})
+    (let [res (create! c {"cid" cid})
+          body (json/parse (:body res))]
+      (is (= 202 (:status res)))
+      (is (= "pinned" (get body "status")))
+      (let [events (->> (st/-read store :kotobase.protocols/audit 0)
+                        (filter #(= :advertise-error (:op %))))]
+        (is (= 1 (count events)))
+        (is (= cid (:cid (first events))))))))

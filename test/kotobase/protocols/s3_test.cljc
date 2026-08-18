@@ -90,3 +90,90 @@
                                      :query {"list-type" "2"}}))]
         (is (str/includes? xml "<Size>5</Size>")))
       (is (= "hello" (:body (s3/handle c {:method :get :path "/media/a.txt"})))))))
+
+;; ------------------------------------------------------- paging
+
+(defn- page [store bucket q]
+  (s3/list-objects-page (st/-list store (s3/objects-coll bucket))
+                        #(st/-get store (s3/objects-coll bucket) %)
+                        q))
+
+(deftest a-listing-is-a-page-not-a-bucket
+  (let [{:keys [store] :as c} (ctx)]
+    (doseq [n (range 1 8)]
+      (s3/handle c {:method :put :path (str "/bkt/k" n) :body (str n)}))
+
+    (testing "max-keys caps the page and says there is more"
+      (let [p (page store "bkt" {:max-keys 3})]
+        (is (= ["k1" "k2" "k3"] (mapv first (:keys p))))
+        (is (:truncated? p))
+        (is (= "k3" (:next-token p)))))
+
+    (testing "the token resumes exactly after the last key returned — no
+              key is served twice and none is skipped"
+      (let [p1 (page store "bkt" {:max-keys 3})
+            p2 (page store "bkt" {:max-keys 3 :start-after (:next-token p1)})
+            p3 (page store "bkt" {:max-keys 3 :start-after (:next-token p2)})]
+        (is (= ["k4" "k5" "k6"] (mapv first (:keys p2))))
+        (is (= ["k7"] (mapv first (:keys p3))))
+        (is (not (:truncated? p3)))
+        (is (= 7 (count (distinct (concat (map first (:keys p1))
+                                          (map first (:keys p2))
+                                          (map first (:keys p3)))))))))
+
+    (testing "a page that fits is not truncated"
+      (is (not (:truncated? (page store "bkt" {:max-keys 100})))))
+
+    (testing "a deleted key is not an entry and does not consume page space —
+              tombstones would otherwise make a full page look short"
+      (s3/handle c {:method :delete :path "/bkt/k2"})
+      (let [p (page store "bkt" {:max-keys 3})]
+        (is (= ["k1" "k3" "k4"] (mapv first (:keys p))))))))
+
+(deftest delimiter-collapses-a-flat-key-space-into-folders
+  (let [{:keys [store] :as c} (ctx)]
+    (doseq [k ["a/1" "a/2" "a/deep/x" "b/1" "top"]]
+      (s3/handle c {:method :put :path (str "/bkt/" k) :body k}))
+
+    (testing "at the top level, each directory appears once and its contents
+              do not appear at all"
+      (let [p (page store "bkt" {:delimiter "/"})]
+        (is (= ["a/" "b/"] (:prefixes p)))
+        (is (= ["top"] (mapv first (:keys p))))))
+
+    (testing "descending into one prefix lists its own entries and collapses
+              only what is deeper"
+      (let [p (page store "bkt" {:prefix "a/" :delimiter "/"})]
+        (is (= ["a/deep/"] (:prefixes p)))
+        (is (= ["a/1" "a/2"] (mapv first (:keys p))))))
+
+    (testing "without a delimiter every key is an entry — the flat view is
+              still what a client that asked for it gets"
+      (let [p (page store "bkt" {})]
+        (is (= 5 (count (:keys p))))
+        (is (empty? (:prefixes p)))))))
+
+(deftest the-wire-carries-what-a-client-needs-to-continue
+  (let [c (ctx)]
+    (doseq [n (range 1 6)]
+      (s3/handle c {:method :put :path (str "/bkt/k" n) :body (str n)}))
+    (let [res (s3/handle c {:method :get :path "/bkt"
+                            :query {"list-type" "2" "max-keys" "2"}})]
+      (is (str/includes? (:body res) "<IsTruncated>true</IsTruncated>"))
+      (is (str/includes? (:body res) "<NextContinuationToken>k2</NextContinuationToken>"))
+      (is (str/includes? (:body res) "<MaxKeys>2</MaxKeys>"))
+      (is (str/includes? (:body res) "<KeyCount>2</KeyCount>"))
+      (is (str/includes? (:body res) "<StorageClass>STANDARD</StorageClass>")))
+
+    (testing "a client that sends no max-keys gets the default, and is told
+              so — it must not have to guess what page size it received"
+      (let [res (s3/handle c {:method :get :path "/bkt" :query {"list-type" "2"}})]
+        (is (str/includes? (:body res) (str "<MaxKeys>" s3/default-max-keys "</MaxKeys>")))
+        (is (str/includes? (:body res) "<IsTruncated>false</IsTruncated>"))))
+
+    (testing "an absurd max-keys is clamped to S3's ceiling rather than
+              honoured — the ceiling is what protects the response"
+      (let [res (s3/handle c {:method :get :path "/bkt"
+                              :query {"list-type" "2" "max-keys" "999999"}})]
+        (is (str/includes? (:body res)
+                           (str "<MaxKeys>" s3/max-max-keys "</MaxKeys>")))))))

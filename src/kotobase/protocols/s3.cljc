@@ -58,28 +58,120 @@
                 (str "<Error><Code>" code "</Code><Message>"
                      (http/xml-escape msg) "</Message></Error>")))
 
-(defn- list-objects [store bucket prefix]
-  ;; DELETE writes a nil tombstone (IStore docs have no remove op), so
-  ;; listing keeps only keys whose doc is still present.
-  (let [entries (->> (st/-list store (objects-coll bucket))
-                     (filter #(str/starts-with? % (or prefix "")))
-                     sort
-                     (keep (fn [k]
-                             (when-let [o (st/-get store (objects-coll bucket) k)]
-                               [k o]))))]
+(def default-max-keys
+  "S3's own default, and the value a client assumes when it sends none.
+
+  Not a tuning knob: a listing with no ceiling is a response whose size is
+  set by the bucket, and this one runs inside a Worker with a CPU limit. The
+  surface used to return every key on every call, which worked until a
+  bucket grew — and the failure it grows into is a timeout on the listing,
+  i.e. the operation a client uses to find out what is there."
+  1000)
+
+(def max-max-keys
+  "The ceiling on what a client can ask for in one page, as S3 defines it."
+  1000)
+
+(defn- parse-max-keys [v]
+  (let [n (when (and (string? v) (re-matches #"\d{1,7}" (str/trim v)))
+            #?(:clj (Long/parseLong (str/trim v))
+               :cljs (js/parseInt (str/trim v) 10)))]
+    (cond
+      (nil? n) default-max-keys
+      (zero? n) 0
+      :else (min n max-max-keys))))
+
+(defn- common-prefix
+  "The `delimiter`-terminated prefix `k` falls under, or nil.
+
+  This is what makes a flat key space look like directories: with
+  `delimiter=/`, `a/b/c` collapses to `a/` and is reported ONCE as a
+  CommonPrefix rather than as an object. rclone and every file-browser
+  client depend on it — without it, listing a bucket at the top level
+  returns every key in every directory, which is both wrong-looking and
+  unbounded."
+  [k prefix delimiter]
+  (when (and delimiter (seq delimiter))
+    (let [rest-of (subs k (count (or prefix "")))
+          idx (str/index-of rest-of delimiter)]
+      (when idx
+        (str (or prefix "") (subs rest-of 0 (+ idx (count delimiter))))))))
+
+(defn list-objects-page
+  "One page of a bucket listing, as data.
+
+  Separated from the XML so the paging decisions can be tested without
+  parsing a document: which keys are in this page, whether there is another
+  one, and what token the client must send to get it.
+
+  The token is simply the last key of the page — S3's own
+  ContinuationToken is opaque, and an opaque token here would mean either
+  server-side cursor state (which nothing would ever clean up) or an
+  encoding that pretends to be opaque while being a key in base64. It is
+  documented as a key so nobody later depends on it being anything else."
+  [all-keys get-fn {:keys [prefix delimiter max-keys start-after]}]
+  (let [prefix (or prefix "")
+        limit (if (nil? max-keys) default-max-keys max-keys)
+        candidates (->> all-keys
+                        (filter #(str/starts-with? % prefix))
+                        sort
+                        (drop-while #(and start-after (<= (compare % start-after) 0))))
+        ;; One pass that stops as soon as the page is full, rather than
+        ;; realising every key and taking the first N: the whole point is
+        ;; that a big bucket costs a page, not a bucket.
+        step (fn [{:keys [keys prefixes seen] :as acc} k]
+               (if (>= (+ (count keys) (count prefixes)) limit)
+                 (reduced (assoc acc :truncated? true :next-token (:last acc)))
+                 (if-let [cp (common-prefix k prefix delimiter)]
+                   (if (contains? seen cp)
+                     (assoc acc :last k)
+                     (-> acc (update :prefixes conj cp) (update :seen conj cp)
+                         (assoc :last k)))
+                   (if-let [o (get-fn k)]
+                     (-> acc (update :keys conj [k o]) (assoc :last k))
+                     ;; DELETE writes a nil tombstone (IStore docs have no
+                     ;; remove op), so a key with no document is a deleted
+                     ;; object and not a listing entry.
+                     acc))))
+        acc (reduce step {:keys [] :prefixes [] :seen #{} :last nil
+                          :truncated? false :next-token nil}
+                    candidates)]
+    (select-keys acc [:keys :prefixes :truncated? :next-token])))
+
+(defn- list-objects [store bucket {:keys [prefix delimiter max-keys start-after]}]
+  (let [{:keys [keys prefixes truncated? next-token]}
+        (list-objects-page (st/-list store (objects-coll bucket))
+                           #(st/-get store (objects-coll bucket) %)
+                           {:prefix prefix :delimiter delimiter
+                            :max-keys max-keys :start-after start-after})]
     (xml-response
      200
      (str "<ListBucketResult>"
           "<Name>" (http/xml-escape bucket) "</Name>"
           "<Prefix>" (http/xml-escape (or prefix "")) "</Prefix>"
-          "<KeyCount>" (count entries) "</KeyCount>"
+          (when (seq delimiter)
+            (str "<Delimiter>" (http/xml-escape delimiter) "</Delimiter>"))
+          "<MaxKeys>" (if (nil? max-keys) default-max-keys max-keys) "</MaxKeys>"
+          "<KeyCount>" (+ (count keys) (count prefixes)) "</KeyCount>"
+          "<IsTruncated>" (if truncated? "true" "false") "</IsTruncated>"
+          (when truncated?
+            (str "<NextContinuationToken>" (http/xml-escape next-token)
+                 "</NextContinuationToken>"))
           (apply str
-                 (for [[k o] entries]
+                 (for [[k o] keys]
                    (str "<Contents>"
                         "<Key>" (http/xml-escape k) "</Key>"
                         "<ETag>&quot;" (:etag o) "&quot;</ETag>"
                         "<Size>" (object-size o) "</Size>"
+                        (when (:last-modified o)
+                          (str "<LastModified>" (http/xml-escape (:last-modified o))
+                               "</LastModified>"))
+                        "<StorageClass>STANDARD</StorageClass>"
                         "</Contents>")))
+          (apply str
+                 (for [p prefixes]
+                   (str "<CommonPrefixes><Prefix>" (http/xml-escape p)
+                        "</Prefix></CommonPrefixes>")))
           "</ListBucketResult>"))))
 
 (defn- object-headers [o]
@@ -100,7 +192,16 @@
       ;; bucket-level: ListObjectsV2
       (nil? k)
       (if (= :get (:method req))
-        (list-objects store bucket (http/query-param req "prefix"))
+        (list-objects store bucket
+                      {:prefix (http/query-param req "prefix")
+                       :delimiter (http/query-param req "delimiter")
+                       :max-keys (parse-max-keys (http/query-param req "max-keys"))
+                       ;; `continuation-token` and `start-after` are the same
+                       ;; thing to this implementation — the token IS a key —
+                       ;; and a client sends one or the other, never both in
+                       ;; a way that disagrees.
+                       :start-after (or (http/query-param req "continuation-token")
+                                        (http/query-param req "start-after"))})
         (error-xml 405 "MethodNotAllowed" "unsupported bucket operation"))
 
       :else

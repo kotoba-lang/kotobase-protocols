@@ -174,11 +174,36 @@
                         "</Prefix></CommonPrefixes>")))
           "</ListBucketResult>"))))
 
+(defn http-date
+  "An ISO-8601 instant as the HTTP-date RFC 9110 requires.
+
+  `<LastModified>` in a listing is ISO-8601, and the `last-modified` HEADER
+  is not: HTTP carries `Tue, 18 Aug 2026 09:51:33 GMT`. Sending the listing
+  format in the header is the kind of wrong most clients ignore and one does
+  not — measured 2026-08-18 against the deployed surface, rclone tried every
+  HTTP-date layout against `2026-08-18T09:51:33.156Z`, failed all of them,
+  and abandoned the download, while the AWS CLI never looked.
+
+  nil for a value it cannot parse, so an unparseable timestamp omits the
+  header rather than emitting a second wrong format."
+  [iso]
+  (when (string? iso)
+    #?(:clj
+       (try (->> (-> (java.time.Instant/parse iso)
+                     (.atZone java.time.ZoneOffset/UTC))
+                 (.format java.time.format.DateTimeFormatter/RFC_1123_DATE_TIME))
+            (catch Exception _ nil))
+       :cljs
+       (let [d (js/Date. iso)]
+         (when-not (js/isNaN (.getTime d))
+           (.toUTCString d))))))
+
 (defn- object-headers [o]
   (cond-> {"content-type" (:content-type o)
            "etag" (str "\"" (:etag o) "\"")
            "content-length" (str (object-size o))}
-    (:last-modified o) (assoc "last-modified" (:last-modified o))))
+    (http-date (:last-modified o))
+    (assoc "last-modified" (http-date (:last-modified o)))))
 
 (defn handle
   "S3 surface handler. `ctx` is {:store IStore, :now optional ISO string}."

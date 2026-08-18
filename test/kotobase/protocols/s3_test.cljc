@@ -177,3 +177,22 @@
                               :query {"list-type" "2" "max-keys" "999999"}})]
         (is (str/includes? (:body res)
                            (str "<MaxKeys>" s3/max-max-keys "</MaxKeys>")))))))
+
+(deftest the-last-modified-header-is-an-http-date
+  (testing "the listing carries ISO-8601 and the header carries an HTTP-date;
+            sending the listing format in the header made rclone abandon a
+            download while the AWS CLI never looked"
+    (is (= "Tue, 18 Aug 2026 09:51:33 GMT" (s3/http-date "2026-08-18T09:51:33.156Z")))
+    (let [c (ctx)]
+      (s3/handle c {:method :put :path "/bkt/k" :body "v"})
+      (let [res (s3/handle c {:method :head :path "/bkt/k"})]
+        (is (= "Fri, 17 Jul 2026 00:00:00 GMT"
+               (get (:headers res) "last-modified"))))
+      (testing "while the listing keeps the ISO form S3 puts there"
+        (is (str/includes? (:body (s3/handle c {:method :get :path "/bkt"
+                                                :query {"list-type" "2"}}))
+                           "<LastModified>2026-07-17T00:00:00Z</LastModified>")))))
+
+  (testing "an unparseable value omits the header rather than emitting a
+            second wrong format"
+    (is (nil? (s3/http-date "not a date")))))

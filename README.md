@@ -8,9 +8,9 @@
 contract: the Kotoba Resource Protocol,
 `90-docs/protocols/kotoba-resource-protocol.edn`).
 
-Every surface is a **pure cljc handler** over the injected
-`kotobase.store/IStore` — the same seam that lets an app run standalone on
-`kotobase.local/LocalStore` or against `kotobase.net`. No I/O, no host JSON,
+Every surface is a **pure cljc handler** over an injected plain operation map.
+`kotobase.protocols.store` supplies the source-local deterministic memory host;
+there is no kotobase/IStore dependency. No handler performs network I/O or host JSON,
 no crypto dependencies live here; deploy shells (Cloudflare Worker, browser
 worker, fleet peer) own transport and authentication, exactly as
 `kotobase-cljc-worker` / `kotobase-browser-worker` rebind the kotobase engine.
@@ -63,10 +63,10 @@ no-store EDN status document. This is the deploy-shell readiness boundary;
 it proves routing and handler availability, not backing-store durability.
 
 ```clojure
-(require '[kotobase.local :as local]
+(require '[kotobase.protocols.store :as local]
          '[kotobase.protocols.router :as router])
 
-(def ctx {:store (local/local-store) :apex "kotobase.net"})
+(def ctx {:store (local/memory-store) :apex "kotobase.net"})
 
 (router/handle ctx {:method :put :host "s3.kotobase.net"
                     :path "/media/hello.txt" :body "hello"})

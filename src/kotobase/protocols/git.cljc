@@ -11,8 +11,8 @@
   identity/authorization only, per ADR-2607072200).
 
   Mapping:
-    refs    → IStore collection [:kotobase.git/refs <repo>]   refname → sha
-    objects → IStore collection [:kotobase.git/objects <repo>] sha → bytes
+    refs    → host collection [:kotobase.git/refs <repo>]   refname → sha
+    objects → host collection [:kotobase.git/objects <repo>] sha → bytes
     HEAD    → refs doc under key \"HEAD\", value \"ref: refs/heads/<b>\"
 
   Dumb-HTTP endpoints (read-only; git clients can fetch over this):
@@ -25,7 +25,7 @@
   smart protocol (upload-pack) are declared follow-ups in the ADR."
   (:require [clojure.string :as str]
             [kotobase.protocols.http :as http]
-            [kotobase.store :as st]))
+            [kotobase.protocols.store :as st]))
 
 (defn refs-coll [repo] [:kotobase.git/refs repo])
 (defn objects-coll [repo] [:kotobase.git/objects repo])
@@ -36,28 +36,28 @@
   "Store loose-object `bytes` for `sha` (40 hex chars) in `repo`."
   [store repo sha bytes]
   {:pre [(re-matches #"[0-9a-f]{40}" sha)]}
-  (st/-put store (objects-coll repo) sha bytes)
-  (st/-append store :kotobase.protocols/audit
+  (st/put store (objects-coll repo) sha bytes)
+  (st/append store :kotobase.protocols/audit
               {:surface :git :op :put-object :repo repo :sha sha})
   sha)
 
 (defn set-ref!
   "Point `refname` (e.g. \"refs/heads/main\") at `sha` in `repo`."
   [store repo refname sha]
-  (st/-put store (refs-coll repo) refname sha)
-  (st/-append store :kotobase.protocols/audit
+  (st/put store (refs-coll repo) refname sha)
+  (st/append store :kotobase.protocols/audit
               {:surface :git :op :set-ref :repo repo :ref refname :sha sha})
   sha)
 
 (defn set-head!
   "Make HEAD a symref to `branch-ref` (e.g. \"refs/heads/main\")."
   [store repo branch-ref]
-  (st/-put store (refs-coll repo) "HEAD" (str "ref: " branch-ref)))
+  (st/put store (refs-coll repo) "HEAD" (str "ref: " branch-ref)))
 
 ;; -------------------------------------------------------------- read (HTTP)
 
 (defn- info-refs [store repo]
-  (let [refnames (->> (st/-list store (refs-coll repo))
+  (let [refnames (->> (st/list-keys store (refs-coll repo))
                       (remove #(= "HEAD" %))
                       sort)]
     (if (empty? refnames)
@@ -65,16 +65,16 @@
       (http/text 200
                  (apply str
                         (for [r refnames]
-                          (str (st/-get store (refs-coll repo) r) "\t" r "\n")))))))
+                          (str (st/get store (refs-coll repo) r) "\t" r "\n")))))))
 
 (defn- head-line [store repo]
-  (if-let [h (st/-get store (refs-coll repo) "HEAD")]
+  (if-let [h (st/get store (refs-coll repo) "HEAD")]
     (http/text 200 (str h "\n"))
     (http/not-found (str "repository not found: " repo))))
 
 (defn- loose-object [store repo d2 d38]
   (let [sha (str d2 d38)]
-    (if-let [bytes (st/-get store (objects-coll repo) sha)]
+    (if-let [bytes (st/get store (objects-coll repo) sha)]
       (http/response 200 {"content-type" "application/x-git-loose-object"} bytes)
       (http/not-found (str "object not found: " sha)))))
 

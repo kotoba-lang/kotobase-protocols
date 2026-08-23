@@ -1,13 +1,13 @@
 (ns kotobase.protocols.git-test
   (:require [clojure.test :refer [deftest is testing]]
-            [kotobase.local :as local]
+            [kotobase.protocols.store :as local]
             [kotobase.protocols.git :as git]))
 
 (def sha1 "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
 (def sha2 "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
 
 (defn- seeded []
-  (let [store (local/local-store)]
+  (let [store (local/memory-store)]
     (git/put-object! store "gftd/nightglass" sha1 "loose-object-bytes-1")
     (git/put-object! store "gftd/nightglass" sha2 "loose-object-bytes-2")
     (git/set-ref! store "gftd/nightglass" "refs/heads/main" sha1)

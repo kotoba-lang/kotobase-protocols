@@ -12,7 +12,7 @@
 
   A response is {:status int :headers {...} :body string-or-nil}.
   Handlers are pure: (handle ctx req) → resp, where ctx carries the
-  injected kotobase.store/IStore under :store (LocalStore standalone,
+  injected plain operation-map host under :store (memory host in tests,
   KotobaseStore against kotobase.net — the store seam never leaks into
   handler logic)."
   (:require [clojure.string :as str]))

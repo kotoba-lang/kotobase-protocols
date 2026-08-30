@@ -73,3 +73,41 @@
                                    :query {"repo" did}})]
         (is (= 400 (:status res)))
         (is (= "InvalidRequest" (get (json/parse (:body res)) "error")))))))
+
+;; --- store-free pre-hydrate decisions ------------------------------------
+;;
+;; These exist because a deploy shell answers them BEFORE hydrating a chain.
+;; If `store-free-response` ever returned nil for one of these, the shell
+;; would go back to hydrating the shared production graph to produce a static
+;; answer — which is the failure being removed (Cloudflare 1102 on 5 of 8
+;; measured requests, 2026-08-30).
+
+(deftest store-free-response-needs-no-store
+  (testing "a path outside /xrpc is 404 without a store"
+    (is (= 404 (:status (atproto/store-free-response {:method :get :path "/"})))))
+  (testing "an unimplemented nsid is 501 without a store"
+    (let [r (atproto/store-free-response
+             {:method :get :path "/xrpc/com.atproto.server.describeServer"})]
+      (is (= 501 (:status r)))
+      (is (re-find #"unsupported nsid" (str (:body r))))))
+  (testing "an implemented nsid on the wrong method is 405 without a store"
+    (is (= 405 (:status (atproto/store-free-response
+                         {:method :post :path "/xrpc/com.atproto.repo.getRecord"}))))
+    (is (= 405 (:status (atproto/store-free-response
+                         {:method :get :path "/xrpc/com.atproto.repo.putRecord"}))))))
+
+(deftest store-free-response-defers-when-the-answer-needs-a-store
+  (testing "every implemented nsid on its own method returns nil"
+    (doseq [[nsid method] atproto/nsid-methods]
+      (is (nil? (atproto/store-free-response
+                 {:method method :path (str "/xrpc/" nsid)}))
+          (str nsid " " method)))))
+
+(deftest handle-agrees-with-store-free-response
+  (testing "handle returns exactly what the pre-hydrate check decided"
+    (doseq [req [{:method :get :path "/"}
+                 {:method :get :path "/xrpc/com.atproto.server.describeServer"}
+                 {:method :post :path "/xrpc/com.atproto.repo.getRecord"}]]
+      (is (= (:status (atproto/store-free-response req))
+             (:status (atproto/handle (ctx) req)))
+          (pr-str req)))))

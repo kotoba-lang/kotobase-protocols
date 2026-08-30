@@ -95,25 +95,60 @@
         (http/response 200 {"content-type" (:content-type b)} (:bytes b))
         (xrpc-error 400 "BlobNotFound" (str "blob not found: " cid))))))
 
-(defn handle
-  "XRPC handler. Dispatches /xrpc/{nsid}; unknown NSIDs → 501."
-  [{:keys [store] :as ctx} req]
+(def nsid-methods
+  "The NSIDs this surface implements, and the one method each answers on.
+
+  `store-free-response` and `handle` both read this, so an NSID cannot be
+  added to the dispatch and missed by the pre-hydrate check — the drift that
+  would turn a supported call into a 501."
+  {"com.atproto.repo.getRecord"    :get
+   "com.atproto.repo.listRecords"  :get
+   "com.atproto.repo.putRecord"    :post
+   "com.atproto.repo.deleteRecord" :post
+   "com.atproto.sync.getBlob"      :get})
+
+(defn store-free-response
+  "The response for a request whose answer does not depend on the store, or
+  nil when answering does need one.
+
+  Three shapes qualify: a path that is not `/xrpc/*` (404), an NSID this
+  surface does not implement (501), and an implemented NSID reached with the
+  wrong method (405). None of them reads a datom.
+
+  **A deploy shell should call this BEFORE it hydrates.** On kotobase.net the
+  atproto surface is the only one whose reads are open, so an unauthenticated
+  GET runs past the credential check into the graph path, and a request that
+  names no `repo` resolves to the shared production chain. Measured 2026-08-30
+  against atproto.kotobase.net: of 8 requests whose correct answer is this
+  function's 501, **5 came back as Cloudflare 1102** (Worker exceeded resource
+  limits) — the Worker hydrated that chain before discovering it had a static
+  answer. The other 4 surfaces on the same Worker answered 32 of 32, because
+  they require a credential and return 401 before doing any work."
+  [req]
   (let [segs (http/segments (:path req))]
     (if-not (= "xrpc" (first segs))
       (http/not-found)
-      (let [nsid (second segs)
-            get? (= :get (:method req))
-            post? (= :post (:method req))]
-        (case nsid
-          "com.atproto.repo.getRecord"
-          (if get? (get-record store req) (http/method-not-allowed))
-          "com.atproto.repo.listRecords"
-          (if get? (list-records store req) (http/method-not-allowed))
-          "com.atproto.repo.putRecord"
-          (if post? (put-record store req) (http/method-not-allowed))
-          "com.atproto.repo.deleteRecord"
-          (if post? (delete-record store req) (http/method-not-allowed))
-          "com.atproto.sync.getBlob"
-          (if get? (get-blob ctx req) (http/method-not-allowed))
+      (let [nsid (second segs)]
+        (if-let [method (get nsid-methods nsid)]
+          (when-not (= method (:method req)) (http/method-not-allowed))
           (xrpc-error 501 "MethodNotImplemented"
                       (str "unsupported nsid: " (or nsid ""))))))))
+
+(defn handle
+  "XRPC handler. Dispatches /xrpc/{nsid}; unknown NSIDs → 501.
+
+  The store-free cases are decided by `store-free-response` first, so the
+  dispatch below runs only for an implemented NSID on its own method."
+  [{:keys [store] :as ctx} req]
+  (or (store-free-response req)
+      (case (second (http/segments (:path req)))
+        "com.atproto.repo.getRecord" (get-record store req)
+        "com.atproto.repo.listRecords" (list-records store req)
+        "com.atproto.repo.putRecord" (put-record store req)
+        "com.atproto.repo.deleteRecord" (delete-record store req)
+        "com.atproto.sync.getBlob" (get-blob ctx req)
+        ;; Unreachable: `store-free-response` returns non-nil for every NSID
+        ;; outside `nsid-methods`. Kept because `case` without a default
+        ;; throws, and a thrown error here would be a 500 where the contract
+        ;; says 501.
+        (xrpc-error 501 "MethodNotImplemented" "unsupported nsid"))))

@@ -20,7 +20,7 @@
   kotobase.net Worker, not in the engine), multipart upload,
   versioning. ETags are kotobase.protocols.hash fingerprints — a
   checksum, NOT a CID (KRP §3.3)."
-  (:require [clojure.string :as str]
+  (:require [kotoba.lang.text :as str]
             [kotobase.protocols.hash :as hash]
             [kotobase.protocols.http :as http]
             [kotobase.store :as st]))

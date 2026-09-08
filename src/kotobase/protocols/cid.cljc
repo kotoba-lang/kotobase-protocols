@@ -9,7 +9,7 @@
   multihash/CID framing and multibase base32. The result is a standard
   CIDv1 (base32, codec raw 0x55, sha2-256) — the `bafkrei…` form any
   IPFS gateway/tool can verify."
-  (:require [clojure.string :as str]))
+  (:require [kotoba.lang.text :as str]))
 
 (def ^:private b32-alphabet "abcdefghijklmnopqrstuvwxyz234567")
 

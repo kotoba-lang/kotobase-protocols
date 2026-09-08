@@ -66,7 +66,7 @@
   this repo (CACAO/Bearer/SigV4 — see kotobase-protocols-worker's
   README, `Auth` section)."
   (:require [clojure.edn :as edn]
-            [clojure.string :as str]
+            [kotoba.lang.text :as str]
             [kotobase.protocols.http :as http]
             [kotobase.store :as st]))
 

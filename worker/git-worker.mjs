@@ -1,6 +1,12 @@
 // Cloudflare transport shell for the CLJC kotobase Git projection.
 // D1 owns transactional refs/identity/audit; R2 owns opaque loose objects.
 
+import {
+  verifyPkhCacao, quotedUsd, requirement, decodePayment, payloadErrors,
+  verifyTxPayment, spendReserve, settleExact, paymentRequiredResponse,
+  DEFAULT_USD, X402_VERSION,
+} from "./git-base-auth.mjs";
+
 const json = (value, status = 200, headers = {}) => new Response(JSON.stringify(value), {
   status, headers: { "content-type": "application/json; charset=utf-8", ...headers },
 });
@@ -18,6 +24,100 @@ const privateRepoPrefixes = (env) => (env.PRIVATE_GIT_REPO_PREFIXES || "")
   .split(",").map((s) => s.trim()).filter(Boolean);
 const isPrivateRepo = (env, repo) => privateRepoPrefixes(env)
   .some((prefix) => repo === prefix || repo.startsWith(`${prefix}/`));
+// PAID_GIT_REPOS: comma-separated "org/repo" names whose reads require an
+// x402 payment (or an authorized wallet CACAO / the admin bearer). An empty
+// value keeps every repo free — the paywall is per-repo opt-in, never global.
+const paidRepoNames = (env) => (env.PAID_GIT_REPOS || "")
+  .split(",").map((s) => s.trim()).filter(Boolean);
+const isPaidRepo = (env, repo) => paidRepoNames(env).some((n) => n === repo);
+
+// Decode the wallet CACAO header (base64 CBOR — same wire the existing
+// did:key path uses) and verify it as a did:pkh Base credential whose
+// resources grant this repo. Returns { ok, address } or { ok: false }.
+// Nonce single-use enforcement is shared with the nekko path via the
+// nonces table.
+async function walletCacaoAuthorized(request, env, repo) {
+  const header = request.headers.get("x-git-cacao") || "";
+  if (!header || header.length > 16384) return { ok: false };
+  let wire;
+  try { wire = decodeCbor(Uint8Array.from(atob(header), (c) => c.charCodeAt(0))); }
+  catch (_) { return { ok: false }; }
+  const payload = wire?.p;
+  if (!payload || typeof payload.iss !== "string" || !payload.iss.startsWith("did:pkh:")) return { ok: false };
+  const checked = await verifyPkhCacao(env, payload, wire?.s?.s);
+  if (!checked.ok) return { ok: false };
+  // Single-use nonce (shared nonces table, same shape as the nekko path).
+  if (!payload.nonce) return { ok: false };
+  try {
+    await env.GIT_DB.prepare("INSERT INTO nonces(did,nonce,created_at) VALUES(?,?,?)")
+      .bind(payload.iss, payload.nonce, new Date().toISOString()).run();
+  } catch (_) { return { ok: false }; } // replayed nonce = uniqueness violation
+  // The CACAO must name this repo (urn:kotobase:git:<repo> or its read path).
+  const wanted = `urn:kotobase:git:${repo}`;
+  const granted = (payload.resources || []).some((r) => r === wanted
+    || r === `${wanted}/*` || r.endsWith("*") && wanted.startsWith(r.slice(0, -1)));
+  if (!granted) return { ok: false };
+  return { ok: true, address: checked.address, signer: checked.signer };
+}
+
+// The 402 challenge `accepts` list for one paid repo read (exact first when
+// a facilitator is configured — a scheme we cannot settle is not advertised).
+function x402Accepts(env, repo, usd, path) {
+  const addr = env.KOTOBASE_TREASURY_ADDR;
+  if (!addr) return null;
+  const resource = `https://git.kotobase.net/${path}`;
+  const facilitator = env.KOTOBASE_X402_FACILITATOR;
+  const opts = [requirement({ payTo: addr, usd, resource, net: "base", scheme: "transaction" })];
+  if (facilitator) opts.unshift(requirement({ payTo: addr, usd, resource, net: "base", scheme: "exact", facilitator }));
+  return opts;
+}
+
+// The full x402 gate for a paid read. Returns the serve Response (with
+// X-PAYMENT-RESPONSE) or a 402/503. `serve` is a () => Promise<Response>.
+async function x402Gate(request, env, repo, path, serve) {
+  const usd = quotedUsd(new URL(request.url).searchParams.get("usd"), DEFAULT_USD);
+  const accepts = x402Accepts(env, repo, usd, path);
+  if (!accepts) return json({ ok: false, error: "crypto rail not configured (KOTOBASE_TREASURY_ADDR unset)" }, 503);
+  const header = request.headers.get("x-payment");
+  if (!header) return paymentRequiredResponse(accepts);
+  const payment = decodePayment(header);
+  const req = payment && accepts.find((a) => a.scheme === payment.scheme && a.network === payment.network);
+  if (!payment || !req) return paymentRequiredResponse(accepts, "unsupported scheme/network");
+  const errs = payloadErrors(payment, req, Math.floor(Date.now() / 1000));
+  if (errs.length) return paymentRequiredResponse(accepts, "invalid payment: " + errs.join(","));
+  let verification;
+  if (req.scheme === "exact") {
+    verification = await settleExact(env, payment, req);
+    if (!verification) return paymentRequiredResponse(accepts, "no facilitator configured");
+  } else {
+    verification = await verifyTxPayment(env, req, payment);
+  }
+  if (!verification.ok) return paymentRequiredResponse(accepts, "payment not confirmed: " + verification.reason);
+  const spend = await spendReserve(env, req, verification);
+  if (!spend.allow) return paymentRequiredResponse(accepts, spend.reason);
+  const response = await serve();
+  const settlement = { success: true, network: req.network,
+    payer: verification.payer, amount: verification.paidMicros, tx: verification.txHash || null };
+  const headers = new Headers(response.headers);
+  headers.set("x-payment-response", btoa(JSON.stringify(settlement)));
+  return new Response(response.body, { status: response.status, headers });
+}
+
+// Unified read gate for one repo path. Returns null when the request may
+// proceed, or a Response to send instead (401 / 402 / 403).
+async function readGate(request, env, repo, path, serve) {
+  const paid = isPaidRepo(env, repo);
+  const priv = isPrivateRepo(env, repo);
+  if (!paid && !priv) return null;
+  if (await adminAuthorized(request, env)) return null;
+  // Base smart-contract auth: a verified wallet CACAO granting this repo
+  // satisfies both the private and the paid gate (identity IS the payment
+  // capacity check for subscribers; per-read billing is for anonymous agents).
+  const wallet = await walletCacaoAuthorized(request, env, repo);
+  if (wallet.ok) return null;
+  if (paid) return x402Gate(request, env, repo, path, serve);
+  return json({ ok: false, error: "Unauthorized" }, 401);
+}
 const validSha = (s) => /^[0-9a-f]{40}$/.test(s);
 const validRef = (s) => /^refs\/(heads|tags)\/[A-Za-z0-9._/-]+$/.test(s) && !s.includes("..") && !s.endsWith("/");
 const validDid = (s) => /^did:key:z[1-9A-HJ-NP-Za-km-z]{40,}$/.test(s);
@@ -420,41 +520,50 @@ async function signedWrite(request, env, url) {
   return json({ ok: false, error: "NotFound" }, 404);
 }
 
+async function infoRefsResponse(env, repo) {
+  const rows = await env.GIT_DB.prepare("SELECT ref,sha FROM refs WHERE repo=? ORDER BY ref").bind(repo).all();
+  if (!rows.results.length) return text("repository not found", 404);
+  return text(rows.results.map((r) => `${r.sha}\t${r.ref}\n`).join(""));
+}
+
+async function headResponse(env, repo) {
+  const row = await env.GIT_DB.prepare("SELECT ref FROM heads WHERE repo=?").bind(repo).first();
+  return row ? text(`ref: ${row.ref}\n`) : text("repository not found", 404);
+}
+
+async function objectResponse(request, env, repo, d2, d38) {
+  const sha = `${d2}${d38}`;
+  let value = await env.GIT_OBJECTS.get(`${repo}/objects/${d2}/${d38}`);
+  if (!value) {
+    const row = await env.GIT_DB.prepare("SELECT block_cid FROM objects WHERE repo=? AND sha=?").bind(repo, sha).first();
+    const block = row?.block_cid ? await env.GIT_OBJECTS.get(`blocks/${row.block_cid}`) : null;
+    if (block) {
+      const raw = await block.arrayBuffer(); const loose = await deflate(raw);
+      await env.GIT_OBJECTS.put(`${repo}/objects/${d2}/${d38}`, loose,
+        { customMetadata: { sha1: sha, blockCid: row.block_cid, cache: "git-loose" } });
+      value = await env.GIT_OBJECTS.get(`${repo}/objects/${d2}/${d38}`);
+    }
+  }
+  return value ? new Response(request.method === "HEAD" ? null : value.body, { status: 200, headers: { "content-type": "application/x-git-loose-object", etag: value.httpEtag } }) : text("object not found", 404);
+}
+
 async function gitRead(request, env, url) {
   if (request.method !== "GET" && request.method !== "HEAD") return text("method not allowed", 405);
   const path = url.pathname.replace(/^\/+/, "");
   let m = path.match(/^([^/]+\/[^/]+)\/info\/refs$/);
   if (m) {
-    if (isPrivateRepo(env, m[1]) && !(await adminAuthorized(request, env)))
-      return json({ ok: false, error: "Unauthorized" }, 401);
-    const rows = await env.GIT_DB.prepare("SELECT ref,sha FROM refs WHERE repo=? ORDER BY ref").bind(m[1]).all();
-    if (!rows.results.length) return text("repository not found", 404);
-    return text(rows.results.map((r) => `${r.sha}\t${r.ref}\n`).join(""));
+    const gate = await readGate(request, env, m[1], path, () => infoRefsResponse(env, m[1]));
+    return gate || infoRefsResponse(env, m[1]);
   }
   m = path.match(/^([^/]+\/[^/]+)\/HEAD$/);
   if (m) {
-    if (isPrivateRepo(env, m[1]) && !(await adminAuthorized(request, env)))
-      return json({ ok: false, error: "Unauthorized" }, 401);
-    const row = await env.GIT_DB.prepare("SELECT ref FROM heads WHERE repo=?").bind(m[1]).first();
-    return row ? text(`ref: ${row.ref}\n`) : text("repository not found", 404);
+    const gate = await readGate(request, env, m[1], path, () => headResponse(env, m[1]));
+    return gate || headResponse(env, m[1]);
   }
   m = path.match(/^([^/]+\/[^/]+)\/objects\/([0-9a-f]{2})\/([0-9a-f]{38})$/);
   if (m) {
-    if (isPrivateRepo(env, m[1]) && !(await adminAuthorized(request, env)))
-      return json({ ok: false, error: "Unauthorized" }, 401);
-    const sha = `${m[2]}${m[3]}`;
-    let value = await env.GIT_OBJECTS.get(`${m[1]}/objects/${m[2]}/${m[3]}`);
-    if (!value) {
-      const row = await env.GIT_DB.prepare("SELECT block_cid FROM objects WHERE repo=? AND sha=?").bind(m[1], sha).first();
-      const block = row?.block_cid ? await env.GIT_OBJECTS.get(`blocks/${row.block_cid}`) : null;
-      if (block) {
-        const raw = await block.arrayBuffer(); const loose = await deflate(raw);
-        await env.GIT_OBJECTS.put(`${m[1]}/objects/${m[2]}/${m[3]}`, loose,
-          { customMetadata: { sha1: sha, blockCid: row.block_cid, cache: "git-loose" } });
-        value = await env.GIT_OBJECTS.get(`${m[1]}/objects/${m[2]}/${m[3]}`);
-      }
-    }
-    return value ? new Response(request.method === "HEAD" ? null : value.body, { status: 200, headers: { "content-type": "application/x-git-loose-object", etag: value.httpEtag } }) : text("object not found", 404);
+    const gate = await readGate(request, env, m[1], path, () => objectResponse(request, env, m[1], m[2], m[3]));
+    return gate || objectResponse(request, env, m[1], m[2], m[3]);
   }
   return text("not found", 404);
 }

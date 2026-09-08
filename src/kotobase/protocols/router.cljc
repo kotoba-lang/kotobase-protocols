@@ -47,7 +47,7 @@
   deploy-shell ADR + credentials described in ADR-2607171700
   (:not-decided), and ipfs.kotobase.net stays owned by
   gftdcojp/net-kotobase-ipfs (ADR-2607072000)."
-  (:require [clojure.string :as str]
+  (:require [kotoba.lang.text :as str]
             [kotobase.protocols.atproto :as atproto]
             [kotobase.protocols.git :as git]
             [kotobase.protocols.http :as http]

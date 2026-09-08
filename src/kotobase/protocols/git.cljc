@@ -23,7 +23,7 @@
   v0.1 stores loose-object bytes as opaque strings supplied by the
   writer and does NOT verify sha1(bytes) == key; verification and the
   smart protocol (upload-pack) are declared follow-ups in the ADR."
-  (:require [clojure.string :as str]
+  (:require [kotoba.lang.text :as str]
             [kotobase.protocols.http :as http]
             [kotobase.store :as st]))
 

@@ -67,8 +67,21 @@ function x402Accepts(env, repo, usd, path) {
   if (!addr) return null;
   const resource = `https://git.kotobase.net/${path}`;
   const facilitator = env.KOTOBASE_X402_FACILITATOR;
-  const opts = [requirement({ payTo: addr, usd, resource, net: "base", scheme: "transaction" })];
-  if (facilitator) opts.unshift(requirement({ payTo: addr, usd, resource, net: "base", scheme: "exact", facilitator }));
+  // KOTOBASE_X402_NETWORKS: comma-separated chains to offer (default "base").
+  // A chain with its own payTo (KOTOBASE_X402_TREASURY_<NET>) gets ITS OWN
+  // destination — one address threaded through every network would put the
+  // mainnet Safe in a testnet offer (the gateway's measured rule).
+  const nets = (env.KOTOBASE_X402_NETWORKS || "base").split(",")
+    .map((s) => s.trim()).filter(Boolean);
+  const opts = [];
+  for (const net of nets) {
+    const payTo = net === "base" ? addr : (env["KOTOBASE_X402_TREASURY_" + net.toUpperCase().replace("-", "_")] || addr);
+    for (const scheme of facilitator ? ["exact", "transaction"] : ["transaction"]) {
+      const req = requirement({ payTo, usd, resource, net, scheme });
+      if (facilitator) req.facilitator = facilitator;
+      opts.push(req);
+    }
+  }
   return opts;
 }
 

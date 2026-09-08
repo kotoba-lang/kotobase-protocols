@@ -21,7 +21,16 @@
   },
   "triggers": { "crons": ["*/5 * * * *"] },
   "vars": {
-    "SERVICE_VERSION": "0.1.0"
+    "SERVICE_VERSION": "0.1.0",
+    // Repos (comma-separated "org/repo") whose GET/HEAD requires the
+    // ADMIN_TOKEN bearer, a Base wallet CACAO (x-git-cacao), or — for paid
+    // repos — an x402 payment. Plain names, not secrets.
+    "PRIVATE_GIT_REPO_PREFIXES": "jk-luxury/club-shinshi-kaizen",
+    // Repos (comma-separated "org/repo") whose reads are x402-paywalled:
+    // anonymous agents pay per read (USDC on Base, KOTOBASE_TREASURY_ADDR
+    // secret); authorized wallet CACAOs and the admin bearer read free.
+    "PAID_GIT_REPOS": "",
+    "KOTOBASE_X402_NETWORKS": "base,base-sepolia"
   },
   "observability": { "enabled": true }
 }

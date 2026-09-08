@@ -42,6 +42,6 @@
     // anonymous agents pay per read (USDC on Base, KOTOBASE_TREASURY_ADDR —
     // a Worker SECRET, set via `wrangler secret put`); authorized Base wallet
     // CACAOs (x-git-cacao) and the admin bearer read free. Empty = no paywall.
-    "PAID_GIT_REPOS": ""
+    "PAID_GIT_REPOS": "fabric-witness/paid-e2e"
   }
 }

@@ -10,8 +10,17 @@ import {
   eip191Digest, siweMessage, recoverAddress, parsePkh, verifyPkhCacao,
   quotedUsd, requirement, challenge, decodePayment, payloadErrors,
   verifyTxPayment, spendReserve, rpcUrls, erc1271Valid,
-  USDC_BASE, TRANSFER_TOPIC, ERC1271_MAGIC, X402_VERSION,
+  USDC_BASE, USDC_BASE_SEPOLIA, TRANSFER_TOPIC, ERC1271_MAGIC, X402_VERSION,
 } from "../worker/git-base-auth.mjs";
+
+// The USDC contracts are MEASURED constants (pay.x402 called name()/version()
+// on-chain 2026-09-01; the live gateway 402 bodies publish the same values).
+// Pin them: a wrong asset address makes every payment "wrong-recipient" or
+// names a worthless token.
+test("USDC contract addresses match the measured on-chain constants", () => {
+  assert.equal(USDC_BASE, "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913");
+  assert.equal(USDC_BASE_SEPOLIA, "0x036CbD53842c5426634e7929541eC2318f3dCF7e");
+});
 
 const hex = (b) => Buffer.from(b).toString("hex");
 

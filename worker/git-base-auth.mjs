@@ -34,7 +34,7 @@ import { secp256k1 } from "@noble/curves/secp256k1.js";
 import { keccak_256 } from "@noble/hashes/sha3.js";
 
 export const USDC_BASE = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913";
-export const USDC_BASE_SEPOLIA = "0x036CbD5886E7d24Dd49DaFb5968bA0C771E4d7b9";
+export const USDC_BASE_SEPOLIA = "0x036CbD53842c5426634e7929541eC2318f3dCF7e";
 export const TRANSFER_TOPIC = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef";
 export const ERC1271_MAGIC = "0x1626ba7e";
 export const MIN_CONFIRMATIONS = 3;
@@ -328,7 +328,7 @@ export async function verifyTxPayment(env, req, payment) {
   if (to !== lc(treasury)) return { ok: false, reason: "wrong-recipient" };
   const paidMicros = BigInt(hexToLong(transfer.data) ?? 0);
   if (paidMicros < requiredMicros) return { ok: false, reason: "underpaid" };
-  return { ok: true, payer, paidMicros: paidMicros.toString() };
+  return { ok: true, payer, paidMicros: paidMicros.toString(), txHash };
 }
 
 // Spend-dedupe: one tx hash pays exactly once, via the GIT_STORE KV

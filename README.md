@@ -147,7 +147,7 @@ First-class runtime is **nbb/cljs** (repo-wide runtime priority):
 
 ```bash
 git clone https://github.com/kotoba-lang/kotobase .deps/kotobase
-nbb --classpath "src:test:.deps/kotobase/src" bin/run_tests.cljs
+nbb --classpath "src:test:.deps/kotobase/src" bin/run_tests.cljk
 ```
 
 The `:test` alias in `deps.edn` is the JVM **compat** suite only.

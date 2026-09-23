@@ -65,7 +65,7 @@
   Write auth is the deploy shell's job same as every other surface in
   this repo (CACAO/Bearer/SigV4 — see kotobase-protocols-worker's
   README, `Auth` section)."
-  (:require [clojure.edn :as edn]
+  (:require [kotoba.lang.edn :as edn]
             [kotoba.lang.text :as str]
             [kotobase.protocols.http :as http]
             [kotobase.store :as st]))

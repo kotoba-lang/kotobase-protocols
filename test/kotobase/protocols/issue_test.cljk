@@ -1,6 +1,6 @@
 (ns kotobase.protocols.issue-test
   (:require [kotoba.lang.edn :as edn]
-            [clojure.test :refer [deftest is testing]]
+            [kotoba.test :refer [deftest is testing]]
             [kotobase.local :as local]
             [kotobase.protocols.issue :as issue]
             [kotobase.store :as st]))

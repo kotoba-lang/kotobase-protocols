@@ -1,5 +1,5 @@
 (ns kotobase.protocols.cid-test
-  (:require [clojure.test :refer [deftest is testing]]
+  (:require [kotoba.test :refer [deftest is testing]]
             [kotobase.protocols.cid :as cid]))
 
 (defn- str-bytes [s]

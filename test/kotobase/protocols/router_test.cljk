@@ -1,7 +1,7 @@
 (ns kotobase.protocols.router-test
   (:require [kotoba.lang.edn :as edn]
             [kotoba.lang.text :as str]
-            [clojure.test :refer [deftest is testing]]
+            [kotoba.test :refer [deftest is testing]]
             [kotobase.local :as local]
             [kotobase.protocols.blocks :as blocks]
             [kotobase.protocols.json :as json]

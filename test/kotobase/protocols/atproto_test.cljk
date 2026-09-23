@@ -1,5 +1,5 @@
 (ns kotobase.protocols.atproto-test
-  (:require [clojure.test :refer [deftest is testing]]
+  (:require [kotoba.test :refer [deftest is testing]]
             [kotobase.local :as local]
             [kotobase.protocols.atproto :as atproto]
             [kotobase.protocols.blocks :as blocks]

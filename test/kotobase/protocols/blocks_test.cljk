@@ -3,7 +3,7 @@
   The assertions that matter here are the two the ADR turns on -- that a
   ctx with a `:blocks` port puts NOTHING in the document collection, and
   that `:cid-of` refuses bytes that do not hash to their key."
-  (:require [clojure.test :refer [deftest is testing]]
+  (:require [kotoba.test :refer [deftest is testing]]
             [kotobase.local :as local]
             [kotobase.protocols.blocks :as blocks]
             [kotobase.store :as st]))

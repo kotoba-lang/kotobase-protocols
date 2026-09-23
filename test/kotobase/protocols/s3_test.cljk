@@ -1,6 +1,6 @@
 (ns kotobase.protocols.s3-test
   (:require [kotoba.lang.text :as str]
-            [clojure.test :refer [deftest is testing]]
+            [kotoba.test :refer [deftest is testing]]
             [kotobase.local :as local]
             [kotobase.protocols.s3 :as s3]
             [kotobase.store :as st]))

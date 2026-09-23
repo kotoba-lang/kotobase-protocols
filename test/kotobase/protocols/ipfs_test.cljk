@@ -1,5 +1,5 @@
 (ns kotobase.protocols.ipfs-test
-  (:require [clojure.test :refer [deftest is testing]]
+  (:require [kotoba.test :refer [deftest is testing]]
             [kotobase.local :as local]
             [kotobase.protocols.blocks :as blocks]
             [kotobase.protocols.ipfs :as ipfs]))
